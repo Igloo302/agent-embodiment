@@ -135,11 +135,79 @@ nmap -sV -p 80,443,8080 <router_ip>
 
 ---
 
+## Phase 2.5: 安全确认模板
+
+执行中/高风险操作前，使用以下确认格式：
+
+### 中风险确认
+
+```
+⚠️ 准备执行：{操作描述}
+设备：{设备名} ({ip})
+影响：{具体影响}
+可逆性：{是/否，如何回滚}
+确认执行？[是/否]
+```
+
+### 高风险确认
+
+```
+🔴 危险操作确认：{操作描述}
+设备：{设备名} ({ip})
+后果：{不可逆影响}
+回滚：{能否回滚，怎么做}
+请回复「确认执行」继续，或说「取消」中止。
+```
+
+---
+
 ## Phase 3: Schema 合并
 
 发现结果 + 已有配置 = 完整的 body-schema。
 
-**合并规则**：
+### 合并流程（具体步骤）
+
+```python
+# 伪代码，实际由 agent 执行
+1. 读取 body-schema.json → cached
+2. 运行 discover-self.sh → self_info
+3. 运行 discover-ollama.sh → ollama_info
+4. 运行 discover-network.sh → network_scan（可选，跨网段可能扫不到）
+5. 合并逻辑：
+   for device in cached.devices:
+       if device.discovered == true:
+           # 自动发现的设备：用新数据覆盖
+           update(device, new_data)
+       else:
+           # 手动配置的设备：保留，只更新 status
+           device.status = check_reachable(device.ip)
+   for new_device in discovered:
+       if new_device not in cached.devices:
+           # 新设备：新增
+           cached.devices.append(new_device)
+6. 更新 discovery_meta.last_full_discovery
+7. 写入 body-schema.json
+```
+
+### 跨网段处理
+
+本机可能在不同子网（如 10.x.x.x），设备在 192.168.x.x。
+ARP 扫描只能扫本机所在网段。
+
+**解决方案**：
+- 对已知网段逐一扫描（从 body-schema.json 的 environment.networks 读取）
+- 或直接用已配置的 IP 做连通性测试（跳过 ARP 扫描）
+
+```bash
+# 跨网段直接测试
+for ip in 192.168.x.100 192.168.x.109; do
+  if ping -c 1 -t 2 "$ip" >/dev/null 2>&1; then
+    echo "$ip alive"
+  fi
+done
+```
+
+### 合并规则
 1. 自动发现的设备 → 新增或更新（标记 `discovered: true`）
 2. 手动配置的设备 → 保留不动（标记 `discovered: false`）
 3. 缓存中存在但本次未发现的设备 → 标记 `status: unreachable`，不删除
@@ -290,7 +358,7 @@ nmap -sV -p 80,443,8080 <router_ip>
 ### 用户问「你跑在什么上面？」
 
 → 读 body-schema.json，告诉用户：
-「我跑在你的 MacBook Pro 上，M4 Pro 芯片，16GB 内存，macOS 15.4。」
+「我跑在你的 MacBook Pro 上，M1 芯片，16GB 内存，macOS 26.3。」
 
 ### 用户问「你能控制什么？」
 
@@ -299,12 +367,29 @@ nmap -sV -p 80,443,8080 <router_ip>
 
 ### 用户说「看看网络里有什么」
 
-→ 运行 discover-network.sh，报告发现结果。
+→ 运行 discover-network.sh + 跨网段 ping，报告发现结果。
 
 ### 用户说「帮我重启 Windows VM」
 
 → 查 safety_level=high（PVE 操作）+ 操作分级=中风险
-→ 先确认：「Windows VM 正在运行中，重启会中断 Ollama 推理。确认要重启吗？」
+→ 使用中风险确认模板：
+```
+⚠️ 准备执行：重启 Windows VM (VMID 103)
+设备：PVE (192.168.x.100)
+影响：Windows VM 将重启，Ollama 推理中断，约 2 分钟恢复
+可逆性：否（重启无法撤回，但可以重新启动）
+确认执行？[是/否]
+```
+
+### 发现脚本失败时的 fallback
+
+| 场景 | Fallback |
+|------|---------|
+| discover-self.sh 失败 | 用 `uname -a`、`hostname` 等基础命令逐个采集 |
+| discover-network.sh 无结果 | 直接 ping 已知 IP（从 body-schema.json 读取） |
+| discover-pve.sh SSH 失败 | 尝试 Ollama API 确认 VM 是否在线 |
+| discover-ollama.sh 跨网段扫不到 | 用配置的 endpoint 直连测试 |
+| body-schema.json 不存在 | 运行全部 discover 脚本，生成初始 schema |
 
 ---
 

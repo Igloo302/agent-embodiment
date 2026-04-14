@@ -33,6 +33,30 @@ for ip in $(arp -a 2>/dev/null | grep -oE '192\.168\.[0-9]+\.[0-9]+' | sort -u);
   fi
 done
 
+# 也测试 schema 中已配置的 endpoint（跨网段）
+if [[ -f "$SCHEMA" ]]; then
+  known_endpoints=$(python3 -c "
+import json
+with open('$SCHEMA') as f:
+    data = json.load(f)
+for d in data.get('devices', []):
+    access = d.get('access', {})
+    if isinstance(access, dict) and 'ollama_api' in access:
+        url = access['ollama_api'].get('url', '')
+        if url:
+            print(url)
+" 2>/dev/null)
+  while IFS= read -r ep; do
+    set +u
+    if [[ ${#endpoints[@]} -eq 0 ]] || [[ ! " ${endpoints[*]} " =~ " ${ep} " ]]; then
+      if curl -s --max-time 3 "$ep/api/tags" >/dev/null 2>&1; then
+        endpoints+=("$ep")
+      fi
+    fi
+    set -u
+  done <<< "$known_endpoints"
+fi
+
 set +u
 echo "found ${#endpoints[@]} ollama instance(s)"
 set -u
