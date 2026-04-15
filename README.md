@@ -40,13 +40,13 @@ Agent：跑在 MacBook Pro 上，macOS 26.3，Apple M1，16GB 内存。
 ### Hermes Agent
 
 ```bash
-hermes skills install <your-username>/agent-embodiment
+hermes skills install Igloo302/agent-embodiment
 ```
 
 ### Claude Code / 其他 Agent
 
 ```bash
-git clone https://github.com/<your-username>/agent-embodiment.git ~/agent-embodiment
+git clone https://github.com/Igloo302/agent-embodiment.git ~/agent-embodiment
 ```
 
 将 `SKILL.md` 的内容加入你的 Agent 系统 prompt，或放在 Agent 能读取的 skill 目录中。
