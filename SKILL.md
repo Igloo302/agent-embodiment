@@ -22,242 +22,91 @@ Agent 也需要类似的能力：
 - **我能动什么** — 可控设备清单和能力边界
 - **什么不能碰** — 安全红线和分级确认
 
-这不是 HomeLab 管理工具，这是 Agent 的**身体 Schema**。
+这不是任何特定场景的管理工具。这是 Agent 的**身体 Schema**。
+适用于 Mac、Linux、Docker 容器、NAS、甚至嵌入式设备。
 
 ---
 
 ## Phase 0: 前置条件
 
-每次激活时，先读取本体 Schema：
+激活时先读本体 Schema：
 
 **路径**：`~/.hermes/skills/agent-embodiment/body-schema.json`
 
 ### 缓存检查
 
 - 文件存在且距上次发现 **< 1 小时** → 直接用缓存，跳到 Phase 4
-- 文件不存在或过期 → 运行发现流程（Phase 1）
-- 文件损坏/JSON 解析失败 → 删除重建，运行完整发现流程
+- 文件不存在 → 运行完整发现流程（Phase 1），生成初始 schema
+- 文件损坏/JSON 解析失败 → 删除重建
 
-### 网络前置
+### 新用户首次激活
 
-执行发现前确认网络连通。如果使用 ZeroTier 等 VPN，注意跨网段路由。
-
-连通性速检：
+schema 为空时，只需运行：
 
 ```bash
-zerotier-cli status          # 确认 ZT 在线 (ONLINE)
-zerotier-cli listnetworks    # 确认网络 OK，看分配的 IP
-ping -c 1 <pve-ip>           # 测试 PVE 路由（ZT 延迟 ~200ms 正常）
-ping -c 1 <vm-ip>            # 测试目标 VM
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
 
-### SSH 配置
-
-所有远程设备通过 SSH Host 别名连接。`~/.ssh/config` 示例：
-
-```
-Host pve-alias
-  HostName 192.168.x.100
-  User root
-  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
-  ConnectTimeout 15
-
-Host vm-alias
-  HostName 192.168.x.109
-  User your-username
-  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
-  ConnectTimeout 15
-```
-
-> ⚠️ **macOS 后量子 KEX 问题**: macOS OpenSSH 10.2+ 默认启用 `mlkem768x25519-sha256`，握手包 ~1.5KB，过 ZT 隧道（延迟 200ms+、MTU 2800）会分片丢失导致 **SSH 在密钥交换卡死**。必须在 SSH config 中禁用 PQ 算法（见上方配置）。
-
-> ⚠️ **Windows VM 管理员 SSH**: 管理员组的 authorized_keys 路径**不是** `~/.ssh/authorized_keys`，而是 `C:\ProgramData\ssh\administrators_authorized_keys`。设置公钥后需 `icacls` 调整权限。
+它会自动跑所有发现脚本并生成初始 schema。
 
 ---
 
 ## Phase 1: 自我发现
 
-分 3 步，逐步建立 Agent 的自我认知。
-
-### Step 1: 我是谁（本机探测）
-
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
 ```
 
-输出示例：
+采集：hostname、OS、架构、CPU、内存、IP、Hermes 版本、Python/Docker/Node 状态。
 
-```
-hostname: your-hostname
-os: macOS 15.x
-arch: arm64
-cpu: Apple M4 Pro (12核)
-memory_gb: 16
-hermes_version: v2026.x.x
-hermes_path: /Users/your-username/.hermes/hermes-agent
-ips: 192.168.x.x, 10.x.x.x
-python: 3.13
-docker: installed
-node: v22.x
-```
-
-### Step 2: 我在哪（网络发现）
+### 网络发现
 
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 ```
 
-扫描策略：
-1. 读本机 IP 和子网掩码，确定扫描范围
-2. ping 扫描存活主机（并行，30 秒内完成）
-3. 对存活主机做端口探测（22/SSH、8006/PVE、11434/Ollama、3389/RDP）
-4. 根据端口推断设备类型
+自动执行：存活探测（schema 已知 IP + ARP 补充）→ 端口扫描（SSH/HTTP/SMB/Ollama/PVE 等 27 种端口）→ mDNS/Bonjour 服务发现。
 
-输出示例：
-
-```
-192.168.x.1    alive  ports=80,443        type=router
-192.168.x.100  alive  ports=22,8006       type=pve
-192.168.x.109  alive  ports=11434         type=vm
-```
-
-### Step 3: 生成/更新 Schema
-
-将发现结果写入 `body-schema.json`，合并已有配置（保留手动添加的设备信息）。
-
----
-
-## Phase 2: 设备探测 + 操作速查
-
-对已发现的每个设备，进一步探测能力和状态。每个设备类型附带操作速查卡。
-
-### PVE（虚拟化平台）
-
-**探测**：
-
-```bash
-ssh <pve-alias> "qm list"                                    # 列出 VM 状态
-ssh <pve-alias> "pvesh get /cluster/resources --type vm --output-format json"  # 详细资源
-```
-
-**操作速查**：
-
-```bash
-# VM 生命周期
-ssh <pve-alias> "qm list"                   # 查看所有 VM 状态
-ssh <pve-alias> "qm start <vmid>"           # 启动 VM
-ssh <pve-alias> "qm shutdown <vmid>"        # 正常关机
-ssh <pve-alias> "qm stop <vmid>"            # 强制关机（危险！）
-ssh <pve-alias> "qm config <vmid>"          # 查看 VM 详情
-ssh <pve-alias> "ip neigh | grep -i '<mac>'"  # 查找 VM IP（ARP 表）
-```
-
-提取：VMID、名称、状态（running/stopped）、CPU/内存分配、磁盘大小。
-
-### Windows VM
-
-**探测**：
-
-```bash
-curl -s http://<vm-ip>:11434/api/tags    # Ollama 模型列表（无需 SSH）
-ssh vm-alias "hostname && whoami"                  # SSH 测试（可能不稳定）
-```
-
-**操作速查**：
-
-```bash
-# SSH 免密执行
-ssh vm-alias "hostname && whoami"
-
-# 需要密码时（密码通过环境变量传入，不要写死）
-sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no user@<vm-ip> "command"
-
-# Ollama API（推荐，无需 SSH）
-curl -s http://<vm-ip>:11434/api/tags | python3 -m json.tool
-curl -s http://<vm-ip>:11434/api/show -d '{"model": "model-name"}' | python3 -m json.tool
-curl -s http://<vm-ip>:11434/api/generate -d '{"model": "model-name", "prompt": "Hello", "stream": false}'
-```
-
-### macOS VM
-
-```bash
-ssh <user>@<vm_ip> "sw_vers; sysctl -n machdep.cpu.brand_string; system_profiler SPDisplaysDataType"
-```
-
-### 网络设备（路由器等）
-
-```bash
-curl -s -o /dev/null -w "%{http_code}" http://<router_ip>   # 简单探测
-nmap -sV -p 80,443,8080 <router_ip>                          # 端口扫描
-```
-
-### 本地推理能力（重点关注）
-
-本地模型部署是核心能力。探测每个设备的推理潜力：
+### 推理能力
 
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
 ```
 
-探测内容：
-1. **GPU** — NVIDIA CUDA / Apple Metal / AMD ROCm，型号、显存总量/已用/空闲
-2. **推理后端** — Ollama / vLLM / llama.cpp / LM Studio，自动发现运行中的实例
-3. **模型清单** — 每个模型的参数量、量化方式、大小、是否已加载
-4. **容量评估** — 根据可用 VRAM 估算能跑多大的模型
+探测 GPU（CUDA/Metal/ROCm）、VRAM、推理后端（Ollama/vLLM/llama.cpp/LM Studio）、模型清单、容量评估。**不绑定特定后端**。
 
-### MoE 模型理解
-
-"Gemma 4 E4B" 中的 "E" = **Effective 参数**（MoE 混合专家架构）：
-- 总参数 8B — 知识容量
-- 每次推理只激活 ~4B 参数 — 实际计算量
-- 效果：推理速度相当于 4B 模型，知识质量接近更大模型
-- 实测：E4B 在所有 benchmark 上碾压 Gemma 3 27B
-
-12GB VRAM 甜点：
-- **E4B (8B Q4)** — ~10GB VRAM，115 tok/s (RTX 5070)，最佳选择
-- **13B Q4** — ~8GB VRAM，80+ tok/s，质量更高
-- **26B MoE (4B active)** — 18GB，放不下 12GB 卡
-
-输出示例：
-
-```
---- 本机 GPU ---
-backend: CUDA (nvidia-smi)
-  GPU 0: NVIDIA GeForce RTX 5070 | 12288MB total, 8192MB free | 15% util | 42°C
-
---- 推理后端 ---
-ollama: running (localhost:11434)
-  models: 2
-vllm: running (localhost:8000)
-
---- 推理容量评估 ---
-  可用 VRAM: 8.0GB → 约可运行 7B-13B (Q4)
-  当前已加载模型: 1 个
-```
-
-**推理能力速查卡**：
+### 本机硬件
 
 ```bash
-# Ollama
-curl -s http://<endpoint>/api/tags | python3 -m json.tool    # 模型列表
-curl -s http://<endpoint>/api/ps | python3 -m json.tool      # 已加载模型
-
-# GPU
-nvidia-smi                                                    # NVIDIA 显卡状态
-system_profiler SPDisplaysDataType                            # macOS Metal
-
-# 快速测试推理（验证端点可用）
-curl -s http://<endpoint>/api/generate \
-  -d '{"model":"<model-name>","prompt":"hi","stream":false}' | head -c 200
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
 ```
+
+音频设备、蓝牙、显示器、摄像头、USB、打印机、挂载存储。
+
+---
+
+## Phase 2: 设备探测
+
+对已发现的设备进一步探测。具体命令取决于设备类型——Agent 根据 body-schema.json 中的 `type` 和 `capabilities` 自行决定。
+
+常见设备类型：
+
+| type | 探测方式 |
+|------|---------|
+| `hypervisor` (PVE 等) | SSH `qm list` / API |
+| `vm` | SSH / HTTP API |
+| `nas` (Synology 等) | DSM API / SMB |
+| `docker_host` | `docker ps` / Docker API |
+| `smart_home` | 对应 skill 探测 |
+| `inference_server` | HTTP API (`/api/tags`, `/v1/models`) |
+
+Agent 不需要在 skill 里记住每个设备的具体命令。body-schema.json 的 `access` 字段告诉 Agent 怎么连，`capabilities` 告诉 Agent 能做什么。
 
 ---
 
 ## Phase 2.5: 安全确认模板
 
-执行中/高风险操作前，使用以下确认格式：
-
-### 中风险确认
+### 中风险
 
 ```
 ⚠️ 准备执行：{操作描述}
@@ -267,7 +116,7 @@ curl -s http://<endpoint>/api/generate \
 确认执行？[是/否]
 ```
 
-### 高风险确认
+### 高风险
 
 ```
 🔴 危险操作确认：{操作描述}
@@ -281,18 +130,11 @@ curl -s http://<endpoint>/api/generate \
 
 ## Phase 3: Schema 自动合并
 
-运行 `merge-schema.py` 自动完成发现 → 合并 → 写入全流程：
-
 ```bash
 python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
 
-自动执行：
-1. 读取现有 body-schema.json
-2. 运行 discover-self.sh 获取本机信息
-3. 测试所有已知设备连通性
-4. 运行 discover-inference.sh 探测推理能力
-5. 按合并规则写回 body-schema.json
+自动执行：读 schema → discover-self → 测试连通性 → 检测推理后端 → 合并写回。
 
 ### 合并规则
 
@@ -300,85 +142,21 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 2. 手动配置的设备 → 保留不动，只更新 status
 3. 缓存中存在但本次未发现 → 标记 `status: unreachable`，不删除
 4. 敏感信息（密码）→ 不写入 schema
+5. 推理后端 → 通用检测（Ollama/vLLM/llama.cpp/LM Studio），不绑特定软件
 
-### body-schema.json 完整格式
+### body-schema.json 格式
+
+参见 `body-schema.example.json`（完整示例）。核心字段：
 
 ```json
 {
-  "self": {
-    "hostname": "your-hostname",
-    "os": "macOS 15.x",
-    "arch": "arm64",
-    "cpu": "Apple M4 Pro",
-    "memory_gb": 16,
-    "hermes_version": "v2026.x.x",
-    "hermes_path": "/Users/your-username/.hermes/hermes-agent",
-    "ip": ["192.168.x.x", "10.x.x.x"],
-    "discovered_at": "2026-01-01T00:00:00+08:00"
-  },
-  "environment": {
-    "timezone": "Asia/Shanghai",
-    "networks": ["192.168.x.0/24"],
-    "gateway": "192.168.x.1"
-  },
-  "devices": [
-    {
-      "id": "pve",
-      "type": "hypervisor",
-      "name": "Proxmox VE",
-      "ip": "192.168.x.100",
-      "os": "Proxmox VE 8.x",
-      "access": "ssh:<pve-alias>",
-      "capabilities": ["vm_lifecycle", "vm_console", "storage", "network"],
-      "safety_level": "high",
-      "vms": [
-        {"vmid": 101, "name": "VM-1", "status": "running"}
-      ],
-      "discovered": true,
-      "status": "reachable",
-      "notes": "填写你的 PVE 实际信息"
-    },
-    {
-      "id": "vm-example",
-      "type": "vm",
-      "name": "Example VM",
-      "ip": "192.168.x.109",
-      "os": "Windows 11",
-      "host": "pve",
-      "vmid": 103,
-      "access": {
-        "ssh": {"available": true, "command": "ssh <vm-alias>"},
-        "ollama_api": {"available": true, "url": "http://192.168.x.109:11434"}
-      },
-      "capabilities": ["ollama_inference", "powershell"],
-      "safety_level": "medium",
-      "gpu": "your-gpu-model",
-      "ollama_models": ["model-name:size"],
-      "discovered": true,
-      "status": "reachable",
-      "notes": "填写你的 VM 实际信息"
-    }
-  ],
-  "services": [
-    {
-      "id": "hermes-dashboard",
-      "name": "Hermes Dashboard",
-      "url": "http://192.168.x.x:9119",
-      "capabilities": ["config_management", "session_view"],
-      "safety_level": "low"
-    },
-    {
-      "id": "hermes-gateway",
-      "name": "Hermes Gateway",
-      "platforms": ["feishu", "telegram", "discord", "weixin"],
-      "capabilities": ["messaging", "cron"],
-      "safety_level": "low"
-    }
-  ],
-  "discovery_meta": {
-    "last_full_discovery": "2026-01-01T00:00:00+08:00",
-    "schema_version": "1.1"
-  }
+  "self": { "hostname", "os", "arch", "cpu", "memory_gb", "ip", ... },
+  "environment": { "timezone", "networks" },
+  "devices": [{
+    "id", "type", "name", "ip", "access", "capabilities", "safety_level", "status"
+  }],
+  "services": [{ "id", "name", "url", "capabilities", "safety_level" }],
+  "discovery_meta": { "last_full_discovery", "schema_version" }
 }
 ```
 
@@ -386,269 +164,108 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ## Phase 4: 安全操作框架
 
-执行任何操作前，先做安全分级：
+| 级别 | 定义 | 行为 |
+|------|------|------|
+| 🟢 只读 | 不改变任何状态 | 直接执行 |
+| 🟡 低风险 | 可逆，影响可控 | 执行后报告 |
+| 🟠 中风险 | 部分可逆，可能影响服务 | 先确认 |
+| 🔴 高风险 | 不可逆或影响全局 | 必须确认 + 说明后果 |
 
-### 操作分级表
-
-| 级别 | 图标 | 定义 | 行为 | 示例 |
-|------|------|------|------|------|
-| 只读 | 🟢 | 不改变任何状态 | 直接执行 | `qm list`、`curl api/tags`、`ping` |
-| 低风险 | 🟡 | 可逆操作，影响范围可控 | 执行后报告 | 启动 VM、下载模型、创建文件 |
-| 中风险 | 🟠 | 部分可逆，可能影响服务 | 先简述影响，等确认 | 停止 VM、删除模型、修改配置 |
-| 高风险 | 🔴 | 不可逆或影响整个系统 | 必须确认 + 说明后果 | 强制关机、删除 VM、`rm -rf` |
-
-### 判断流程
-
-```
-收到操作请求
-  ↓
-查 body-schema.json → 这个设备的 safety_level 是什么？
-  ↓
-查操作分级表 → 这个操作是什么级别？
-  ↓
-只读？→ 直接执行
-低风险？→ 执行，完成后告诉用户
-中风险？→ 说「我准备做 X，会影响 Y，确认吗？」
-高风险？→ 说「X 操作不可逆，会导致 Y，你确定？」
-```
-
-### 不确定时的默认行为
-
-- 找不到设备信息 → 问用户
-- 操作分级不明确 → 按高一级处理
-- 网络不通 → 先检查连通性，不直接假设失败
+不确定时按高一级处理。
 
 ---
 
 ## Phase 4.5: 动作验证闭环
 
-执行操作后**必须验证结果**，不能「做了就完了」。
-
-### 验证脚本
-
 ```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target> [expected] [timeout]
+bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target> [expected]
 ```
 
-返回 JSON：`{"status": "pass"|"fail", "detail": "...", "verified_at": "..."}`
+返回 JSON：`{"status": "pass"|"fail", "detail": "..."}`
 
-### 可验证的动作
+常用验证：
 
 | 动作 | 参数 | 用途 |
 |------|------|------|
-| `vm-running` | `<pve> <vmid>` | VM 是否在运行 |
-| `vm-stopped` | `<pve> <vmid>` | VM 是否已停止 |
-| `ssh-reachable` | `<ip>` | SSH 端口是否开放 |
-| `ping-reachable` | `<ip>` | 主机是否可达 |
-| `service-up` | `<url>` | HTTP 服务是否响应 |
-| `ollama-up` | `<base-url>` | Ollama 是否在线 |
-| `ollama-model` | `<base-url> <model>` | 模型是否存在 |
-| `ollama-model-loaded` | `<base-url> <model>` | 模型是否已加载到 VRAM |
-| `process-running` | `<name>` | 进程是否在跑 |
-| `disk-space` | `<mount> <max%>` | 磁盘使用率是否低于阈值 |
-| `port-open` | `<ip> <port>` | 端口是否开放 |
+| `vm-running` | `<pve-ip> <vmid>` | VM 是否运行 |
+| `ssh-reachable` | `<ip>` | SSH 端口开放 |
+| `service-up` | `<url>` | HTTP 服务响应 |
+| `ollama-up` / `ollama-model` | `<url> [model]` | 推理服务/模型状态 |
+| `process-running` | `<name>` | 进程状态 |
+| `disk-space` | `<mount> <max%>` | 磁盘使用率 |
 | `network-check` | `<ip> <ports>` | 多端口批量检查 |
-
-### 使用流程
-
-```
-用户：「重启 Win VM」
-  ↓
-Agent：⚠️ 中风险确认 → 用户确认
-  ↓
-Agent：执行 qm reboot 103
-  ↓
-Agent：verify-action.sh vm-running pve 103
-  ↓
-pass → 「✅ Win VM 已重启成功，Ollama 在线」
-fail → 「❌ Win VM 重启后未起来，检查中...」
-```
-
-### 验证失败时的处理
-
-1. **自动重试**：网络类验证失败 → 等 5 秒重试一次
-2. **报告原因**：返回具体失败细节（端口未开 / 超时 / 状态不对）
-3. **建议下一步**：「VM 启动慢？可等 30 秒再检查」或「SSH 不通，试试 Ollama API」
 
 ---
 
 ## Phase 5: 持久化
 
-### 写入 MEMORY.md
-
 发现完成后，把关键信息写入 agent 持久记忆：
 
 ```
 **Agent 本体**: 跑在 <hostname> 上，Hermes v2026.x.x
-**可控设备**: PVE (<pve-ip>)、VM (<vm-ip>)、Hermes Dashboard
-**已知限制**: <你的已知限制>
+**可控设备**: <设备列表>
+**已知限制**: <踩过的坑>
 **最后发现**: <日期>
 ```
-
-### Schema 文件
-
-完整 schema 存 `body-schema.json`，每次激活时读取，发现变化时更新。
 
 ---
 
 ## 发现脚本
 
-所有脚本在 `~/.hermes/skills/agent-embodiment/scripts/` 下：
+`~/.hermes/skills/agent-embodiment/scripts/` 下：
 
-| 脚本 | 功能 | 耗时 |
-|------|------|------|
-| `discover-self.sh` | 本机信息采集 | <5秒 |
-| `discover-hardware.sh` | **本机硬件**（音频/蓝牙/显示器/摄像头/USB/打印机/存储） | <10秒 |
-| `discover-network.sh` | **网络发现统一入口**（编排存活探测 + mDNS + NAS） | ~60秒 |
-| `discover-mdns.sh` | mDNS/Bonjour 服务发现 | ~30秒 |
-| `discover-nas.sh` | NAS/服务端口探测 | ~30秒 |
-| `discover-pve.sh` | PVE VM 列表 | ~5秒 |
-| `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
-| `discover-inference.sh` | **推理能力探测**（GPU/VRAM/后端/模型） | ~10秒 |
-| `merge-schema.py` | **Phase 3 自动合并**（运行所有脚本 + 写入 schema） | ~90秒 |
-| `verify-action.sh` | **Phase 4.5 动作验证**（操作后闭环检查，返回 pass/fail） | ~5秒 |
+| 脚本 | 功能 |
+|------|------|
+| `discover-self.sh` | 本机信息 |
+| `discover-hardware.sh` | 音频/蓝牙/显示器/摄像头/USB/存储 |
+| `discover-network.sh` | 网络发现（存活探测 + 端口 + mDNS） |
+| `discover-mdns.sh` | mDNS/Bonjour 服务发现 |
+| `discover-pve.sh` | PVE VM 列表（可选插件） |
+| `discover-inference.sh` | GPU/VRAM/推理后端/模型 |
+| `merge-schema.py` | 自动合并 → body-schema.json |
+| `verify-action.sh` | 操作结果验证 |
 
-手动运行全部发现：
-
-```bash
-for script in ~/.hermes/skills/agent-embodiment/scripts/discover-*.sh; do
-  echo "=== $(basename $script) ==="
-  bash "$script"
-done
-```
-
-### 脚本失败 Fallback
-
-| 场景 | Fallback |
-|------|---------|
-| discover-self.sh 失败 | 用 `uname -a`、`hostname` 等基础命令逐个采集 |
-| discover-network.sh 无结果 | 直接 ping 已知 IP（从 body-schema.json 读取） |
-| discover-pve.sh SSH 失败 | 尝试 Ollama API 确认 VM 是否在线 |
-| discover-ollama.sh 跨网段扫不到 | 用配置的 endpoint 直连测试 |
-| body-schema.json 不存在 | 运行全部 discover 脚本，生成初始 schema |
-| 脚本无执行权限 | `chmod +x` 后重试，或直接 `bash` 执行 |
+脚本失败 fallback：用基础命令（`uname -a`、`hostname`、`ping`）逐个采集。
 
 ---
 
 ## 使用场景
 
-### 用户问「你跑在什么上面？」
+**「你跑在什么上面？」** → 读 schema 的 `self` 字段回答。
 
-→ 读 body-schema.json，告诉用户：
-「我跑在你的 MacBook Pro 上，M4 Pro 芯片，16GB 内存，macOS 15.4.1。」
+**「你能控制什么？」** → 读 `devices` 列表 + `capabilities`。
 
-### 用户问「你能控制什么？」
+**「看看网络里有什么」** → 跑 `discover-network.sh`。
 
-→ 读 devices 列表：
-「我能管理 PVE 上的 2 台 VM（macOS 和 Windows），Windows 上的 Ollama 有 2 个模型。Hermes Dashboard 也能访问。」
+**「我有什么算力？」** → 跑 `discover-inference.sh`，汇报 GPU/VRAM/模型/容量。
 
-### 用户说「看看网络里有什么」
-
-→ 运行 discover-network.sh + 跨网段 ping，报告发现结果。
-
-### 用户说「帮我重启 Windows VM」
-
-→ 查 safety_level=high（PVE 操作）+ 操作分级=中风险
-→ 使用中风险确认模板：
-```
-⚠️ 准备执行：重启 VM (VMID <vmid>)
-设备：PVE (<pve-ip>)
-影响：<VM 名> 将重启，服务中断，约 2 分钟恢复
-可逆性：否（重启无法撤回，但可以重新启动）
-确认执行？[是/否]
-```
-
-### 用户问「我有什么算力？」
-
-→ 运行 discover-inference.sh，汇报：
-「你有一张 RTX 5070 (12GB VRAM)，当前空闲 8GB，能跑 7B-13B 量化的模型。Ollama 已加载 2 个模型。」
-
-### 用户问「能跑什么模型？」
-
-→ 查 body-schema.json 的 inference 信息：
-「根据当前 VRAM，可以流畅跑 7B-13B Q4 量化模型。推荐：Qwen2.5-7B、Llama3-8B。如果用 CPU 推理，7B 约 8-12 tok/s。」
-
-### 用户说「看看 Ollama 状态」
-
-→ 运行 discover-inference.sh 或直接 curl Ollama API：
-「Ollama 运行中，3 个模型已安装（model-name、model-name、model-name），当前 gemma4 已加载，VRAM 占用 5.2GB。」
-
----
-
-## 与其他 Skill 的关系
-
-| Skill | 关系 |
-|-------|------|
-| `openhue` | 智能家居设备，可纳入 embodiment 的 devices 列表 |
-| `memory` | embodiment 的发现结果写入持久记忆 |
-| `cron` | 可定期跑发现脚本，保持环境感知最新 |
+**「帮我重启 XX」** → 查 safety_level + 操作分级 → 确认 → 执行 → `verify-action.sh` 验证。
 
 ---
 
 ## 扩展指南
 
-### 添加新设备类型
+### 添加新设备
 
-1. 在 `body-schema.json` 的 devices 中添加条目
-2. 写对应的 `discover-xxx.sh` 脚本（可选）
-3. 定义 capabilities 和 safety_level
-4. 测试连通性
+1. `body-schema.json` 的 `devices` 中添加条目
+2. 定义 `type`、`capabilities`、`safety_level`、`access`
+3. 可选：写 `discover-xxx.sh` 脚本
 
 ### 从外部 Skill 注册设备
 
-其他 skill 可以在 `body-schema.json` 中注册自己的设备：
-
-```json
-{
-  "id": "philips-hue",
-  "type": "smart_home",
-  "name": "Philips Hue Bridge",
-  "ip": "192.168.x.xxx",
-  "registered_by": "openhue-skill",
-  "capabilities": ["light_control", "scene"],
-  "safety_level": "low"
-}
-```
-
-这样 embodiment 就成了所有设备的**统一注册中心**。
-
----
-
-## 排障速查
-
-### ZeroTier
-
-1. `zerotier-cli status` → 确认 ONLINE
-2. `zerotier-cli listnetworks` → 确认网络 OK，看分配的 IP
-3. `ping <pve-ip>` → 确认路由可达
-4. `nc -z -w5 <pve-ip> 22` → 确认端口 open
-5. ZT 重连后端口仍不通 → 先 `leave` 再 `join` 重新加入网络
-
-### SSH
-
-6. SSH 卡在 `KEXINIT` / `KEX_ECDH_REPLY` → 后量子算法问题，加 `KexAlgorithms`（见 Phase 0）
-7. SSH Permission denied 但密码正确 → Windows 管理员检查 `C:\ProgramData\ssh\administrators_authorized_keys`
-
-### HuggingFace
-
-8. 下载 401 错误 → 需先在 HF 页面点 Agree 接受协议，然后配置 token：
-   ```bash
-   setx HF_TOKEN "hf_xxxxx"
-   curl -L -H "Authorization: Bearer hf_xxxxx" -o model.gguf "https://huggingface.co/.../resolve/main/file.gguf"
-   ```
+其他 skill 可往 `body-schema.json` 注册设备，embodiment 成为**统一注册中心**。
 
 ---
 
 ## 诚实边界
 
-1. **发现能力有限** — ping 扫描只能发现存活主机，端口探测可能被防火墙阻挡
-2. **不替代专业监控** — 这是 agent 的环境感知，不是 Zabbix/Prometheus
-3. **Schema 可能过时** — DHCP 环境下 IP 会变，需要定期刷新
-4. **安全分级是参考** — 最终判断权在用户，agent 只是提供建议
-5. **只覆盖已知协议** — SSH、HTTP API、Ollama，未知协议需要手动配置
+1. 发现能力有限 — ping 只能发现存活主机，端口可能被防火墙阻挡
+2. 不替代专业监控 — 这是环境感知，不是 Zabbix
+3. Schema 可能过时 — DHCP 下 IP 会变，需定期刷新
+4. 安全分级是参考 — 最终判断权在用户
 
 ---
 
 **维护者**: 劲阳
 **最后更新**: 2026-04-15
-**版本**: 2.1 (结构重组：整合连接实操、统一 Phase 入口)
+**版本**: 3.0 (精简瘦身 + 通用化 + 脚本整合)

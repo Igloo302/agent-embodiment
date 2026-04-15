@@ -1,229 +1,123 @@
 #!/bin/bash
-# discover-inference.sh — 本地推理能力探测
-# 检测 GPU、VRAM、推理后端（Ollama/vLLM/llama.cpp）、可用模型
-# 输出 JSON 格式，可直接合并入 body-schema.json
+# discover-inference.sh — 本地推理能力探测（通用，不绑定特定后端）
+# 自动检测 GPU、VRAM、推理后端（Ollama/vLLM/llama.cpp/LM Studio/任意 OpenAI 兼容 API）
+# 新用户友好：无 body-schema.json 时也能跑
 
 set -euo pipefail
 
 SCHEMA="$HOME/.hermes/skills/agent-embodiment/body-schema.json"
-results="[]"
 
-# ============================================================
-# 1. 本机 GPU 探测
-# ============================================================
-echo "--- 本机 GPU ---"
+echo "=== 推理能力探测 ==="
+echo ""
 
-gpu_info="[]"
+# ---------------------------------------------------------------
+# 1. GPU 探测
+# ---------------------------------------------------------------
+echo "--- GPU ---"
+gpu_backend="none"
+gpu_name="none"
+gpu_mem_total=0
+gpu_mem_free=0
 
 # NVIDIA (CUDA)
 if command -v nvidia-smi &>/dev/null; then
-  echo "backend: CUDA (nvidia-smi)"
-  nvidia_out=$(nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,driver_version,temperature.gpu,utilization.gpu \
-    --format=csv,noheader,nounits 2>/dev/null || true)
-  
+  gpu_backend="cuda"
+  nvidia_out=$(nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
   if [[ -n "$nvidia_out" ]]; then
-    idx=0
-    while IFS= read -r line; do
-      name=$(echo "$line" | cut -d',' -f1 | xargs)
-      mem_total=$(echo "$line" | cut -d',' -f2 | xargs)
-      mem_used=$(echo "$line" | cut -d',' -f3 | xargs)
-      mem_free=$(echo "$line" | cut -d',' -f4 | xargs)
-      driver=$(echo "$line" | cut -d',' -f5 | xargs)
-      temp=$(echo "$line" | cut -d',' -f6 | xargs)
-      util=$(echo "$line" | cut -d',' -f7 | xargs)
-      
-      echo "  GPU $idx: $name | ${mem_total}MB total, ${mem_free}MB free | ${util}% util | ${temp}°C"
-      
-      gpu_info=$(python3 -c "
-import json, sys
-info = json.loads('$gpu_info') if '$gpu_info' != '[]' else []
-info.append({
-    'index': $idx,
-    'name': '$name',
-    'backend': 'cuda',
-    'memory_total_mb': $mem_total,
-    'memory_used_mb': $mem_used,
-    'memory_free_mb': $mem_free,
-    'driver': '$driver',
-    'temperature': $temp,
-    'utilization': $util
-})
-print(json.dumps(info))
-" 2>/dev/null || echo "$gpu_info")
-      idx=$((idx + 1))
-    done <<< "$nvidia_out"
+    gpu_name=$(echo "$nvidia_out" | cut -d',' -f1 | xargs)
+    gpu_mem_total=$(echo "$nvidia_out" | cut -d',' -f2 | xargs)
+    gpu_mem_free=$(echo "$nvidia_out" | cut -d',' -f3 | xargs)
+    echo "  $gpu_name (${gpu_backend})"
+    echo "  VRAM: ${gpu_mem_total}MB total, ${gpu_mem_free}MB free"
   fi
+# Apple Metal
+elif [[ "$(uname)" == "Darwin" ]]; then
+  gpu_backend="metal"
+  gpu_name=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chip Model" | head -1 | sed 's/.*: //' || echo "Apple GPU")
+  mem_gb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo "0")
+  echo "  $gpu_name (${gpu_backend}, unified ${mem_gb}GB)"
+# AMD (ROCm)
+elif command -v rocm-smi &>/dev/null; then
+  gpu_backend="rocm"
+  echo "  AMD GPU (${gpu_backend})"
+else
+  echo "  无独立 GPU（CPU-only）"
 fi
 
-# Apple Metal (macOS)
-if [[ "$(uname)" == "Darwin" ]]; then
-  metal_info=$(system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|VRAM|Metal" | head -5 || true)
-  if [[ -n "$metal_info" ]]; then
-    gpu_name=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chip Model" | head -1 | sed 's/.*: //' || echo "Apple GPU")
-    gpu_mem=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}' || echo "?")
-    echo "backend: Metal ($gpu_name, shared ${gpu_mem}GB)"
-    
-    gpu_info=$(python3 -c "
-import json
-info = json.loads('$gpu_info') if '$gpu_info' != '[]' else []
-info.append({
-    'index': 0,
-    'name': '$gpu_name',
-    'backend': 'metal',
-    'memory_total_mb': int('$gpu_mem') * 1024 if '$gpu_mem' != '?' else 0,
-    'memory_note': 'unified_memory'
-})
-print(json.dumps(info))
-" 2>/dev/null || echo "$gpu_info")
-  fi
-fi
-
-# AMD (rocm-smi, less common)
-if command -v rocm-smi &>/dev/null; then
-  echo "backend: ROCm (AMD)"
-  rocm_out=$(rocm-smi --showproductname --showmeminfo vram --csv 2>/dev/null || true)
-  if [[ -n "$rocm_out" ]]; then
-    echo "  $rocm_out"
-    gpu_info=$(python3 -c "
-import json
-info = json.loads('$gpu_info') if '$gpu_info' != '[]' else []
-info.append({'index': 0, 'name': 'AMD GPU', 'backend': 'rocm'})
-print(json.dumps(info))
-" 2>/dev/null || echo "$gpu_info")
-  fi
-fi
-
-if [[ "$gpu_info" == "[]" ]]; then
-  echo "  无独立 GPU（CPU-only 推理）"
-fi
-
-# ============================================================
-# 2. 本机推理后端探测
-# ============================================================
+# ---------------------------------------------------------------
+# 2. 推理后端探测（通用，扫描常见端口和协议）
+# ---------------------------------------------------------------
 echo ""
 echo "--- 推理后端 ---"
 
-backends="[]"
+backends_found=0
 
-# Ollama（本地 + 远程）
-ollama_local="http://localhost:11434"
-if curl -s --max-time 2 "$ollama_local/api/tags" >/dev/null 2>&1; then
-  echo "ollama: running (localhost:11434)"
-  
-  # 获取模型列表 + 运行状态
-  tags_resp=$(curl -s --max-time 5 "$ollama_local/api/tags" 2>/dev/null)
-  running_resp=$(curl -s --max-time 5 "$ollama_local/api/ps" 2>/dev/null)
-  
-  model_info=$(python3 -c "
-import json
-tags = json.loads('''$tags_resp''') if '''$tags_resp''' else {'models': []}
-running = json.loads('''$running_resp''') if '''$running_resp''' else {'models': []}
-running_names = {m['name'] for m in running.get('models', [])}
+# 探测函数：测试一个 OpenAI 兼容的 /v1/models 端点
+check_openai_compat() {
+  local url="$1" name="$2"
+  resp=$(curl -s --max-time 3 "$url/v1/models" 2>/dev/null || true)
+  if [[ -n "$resp" ]] && echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if 'data' in d or 'models' in d else 1)" 2>/dev/null; then
+    count=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('data', d.get('models',[]))))" 2>/dev/null || echo "?")
+    echo "  $name ($url): running, $count models"
+    backends_found=$((backends_found + 1))
+    return 0
+  fi
+  return 1
+}
 
-models = []
-for m in tags.get('models', []):
+# 探测函数：测试 Ollama API
+check_ollama() {
+  local url="$1" label="$2"
+  resp=$(curl -s --max-time 3 "$url/api/tags" 2>/dev/null || true)
+  if [[ -n "$resp" ]] && echo "$resp" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+    count=$(echo "$resp" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('models',[])))" 2>/dev/null || echo "?")
+    echo "  Ollama ($url): running, $count models"
+    
+    # 列出模型
+    echo "$resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for m in d.get('models', []):
     name = m.get('name', '?')
     size_gb = m.get('size', 0) / 1e9
     params = m.get('details', {}).get('parameter_size', '?')
     quant = m.get('details', {}).get('quantization_level', '?')
-    models.append({
-        'name': name,
-        'size_gb': round(size_gb, 1),
-        'parameters': params,
-        'quantization': quant,
-        'loaded': name in running_names
-    })
-
-print(json.dumps(models))
-" 2>/dev/null || echo "[]")
-  
-  backends=$(python3 -c "
-import json
-backends = json.loads('$backends') if '$backends' != '[]' else []
-models = json.loads('$model_info')
-backends.append({
-    'type': 'ollama',
-    'url': '$ollama_local',
-    'status': 'running',
-    'models': models,
-    'models_count': len(models),
-    'loaded_count': sum(1 for m in models if m.get('loaded'))
-})
-print(json.dumps(backends))
-" 2>/dev/null || echo "$backends")
-  
-  echo "  models: $(echo "$model_info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")"
-fi
-
-# vLLM（常见端口 8000）
-for port in 8000 8001 8080; do
-  vllm_url="http://localhost:$port"
-  if curl -s --max-time 2 "$vllm_url/v1/models" >/dev/null 2>&1; then
-    echo "vllm: running (localhost:$port)"
-    vllm_models=$(curl -s --max-time 3 "$vllm_url/v1/models" 2>/dev/null | python3 -c "
+    print(f'    - {name} ({params}, {quant}, {size_gb:.1f}GB)')
+" 2>/dev/null || true
+    
+    # 检查已加载模型
+    loaded=$(curl -s --max-time 2 "$url/api/ps" 2>/dev/null | python3 -c "
 import json, sys
-try:
-    data = json.load(sys.stdin)
-    models = data.get('data', [])
-    for m in models:
-        print(f'  - {m.get(\"id\", \"?\")}')
-    print(f'  total: {len(models)}')
-except: print('  parse_error')
-" 2>/dev/null || true)
-    echo "$vllm_models"
+d = json.load(sys.stdin)
+models = d.get('models', [])
+if models:
+    print(', '.join(m.get('name','?') for m in models))
+else:
+    print('none')
+" 2>/dev/null || echo "unknown")
+    echo "    loaded: $loaded"
     
-    backends=$(python3 -c "
-import json
-backends = json.loads('$backends') if '$backends' != '[]' else []
-backends.append({'type': 'vllm', 'url': '$vllm_url', 'status': 'running'})
-print(json.dumps(backends))
-" 2>/dev/null || echo "$backends")
-    break
+    backends_found=$((backends_found + 1))
+    return 0
   fi
-done
+  return 1
+}
 
-# llama.cpp server（常见端口 8080, 8888）
+# 本机扫描
+echo "  本机扫描:"
+check_ollama "http://localhost:11434" "localhost:11434" || true
+check_openai_compat "http://localhost:8000" "localhost:8000 (vLLM)" || true
+check_openai_compat "http://localhost:1234" "localhost:1234 (LM Studio)" || true
+
+# llama.cpp (health check)
 for port in 8080 8888; do
-  llama_url="http://localhost:$port"
-  if curl -s --max-time 2 "$llama_url/health" >/dev/null 2>&1; then
-    echo "llama.cpp: running (localhost:$port)"
-    
-    backends=$(python3 -c "
-import json
-backends = json.loads('$backends') if '$backends' != '[]' else []
-backends.append({'type': 'llama_cpp', 'url': '$llama_url', 'status': 'running'})
-print(json.dumps(backends))
-" 2>/dev/null || echo "$backends")
-    break
+  if curl -s --max-time 2 "http://localhost:$port/health" >/dev/null 2>&1; then
+    echo "  llama.cpp (localhost:$port): running"
+    backends_found=$((backends_found + 1))
   fi
 done
 
-# LM Studio（常见端口 1234）
-for port in 1234; do
-  lmstudio_url="http://localhost:$port"
-  if curl -s --max-time 2 "$lmstudio_url/v1/models" >/dev/null 2>&1; then
-    echo "lmstudio: running (localhost:$port)"
-    
-    backends=$(python3 -c "
-import json
-backends = json.loads('$backends') if '$backends' != '[]' else []
-backends.append({'type': 'lmstudio', 'url': '$lmstudio_url', 'status': 'running'})
-print(json.dumps(backends))
-" 2>/dev/null || echo "$backends")
-    break
-  fi
-done
-
-if [[ "$backends" == "[]" ]]; then
-  echo "  未检测到运行中的推理后端"
-fi
-
-# ============================================================
-# 3. 远程设备推理能力（从 schema 读取）
-# ============================================================
-echo ""
-echo "--- 远程推理端点 ---"
-
+# 远程扫描（从 body-schema.json 读取已知端点，或从 ARP 扫描）
 if [[ -f "$SCHEMA" ]]; then
   remote_endpoints=$(python3 -c "
 import json
@@ -231,70 +125,61 @@ with open('$SCHEMA') as f:
     data = json.load(f)
 for d in data.get('devices', []):
     access = d.get('access', {})
-    if isinstance(access, dict) and 'ollama_api' in access:
-        url = access['ollama_api'].get('url', '')
-        if url:
-            print(f'{d[\"id\"]}|{url}')
+    if isinstance(access, dict):
+        if 'ollama_api' in access:
+            url = access['ollama_api'].get('url', '')
+            if url: print(f\"{d.get('id','?')}|ollama|{url}\")
 " 2>/dev/null || true)
   
-  while IFS='|' read -r dev_id url; do
+  while IFS='|' read -r dev_id backend url; do
     [[ -z "$dev_id" ]] && continue
-    if curl -s --max-time 3 "$url/api/tags" >/dev/null 2>&1; then
-      resp=$(curl -s --max-time 5 "$url/api/tags" 2>/dev/null)
-      count=$(echo "$resp" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('models',[])))" 2>/dev/null || echo "?")
-      echo "  $dev_id ($url): reachable, $count models"
-    else
-      echo "  $dev_id ($url): unreachable"
+    if [[ "$backend" == "ollama" ]]; then
+      check_ollama "$url" "$dev_id" || true
     fi
   done <<< "$remote_endpoints"
-else
-  echo "  (无 body-schema.json，跳过远程探测)"
 fi
 
-# ============================================================
-# 4. 推理容量评估
-# ============================================================
+# ARP 补充扫描 Ollama 常见端口
+for ip in $(arp -a 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | sort -u); do
+  # 跳过已覆盖的
+  [[ "$ip" == "127.0.0.1" ]] && continue
+  if curl -s --max-time 2 "http://$ip:11434/api/tags" >/dev/null 2>&1; then
+    # 避免重复
+    if ! echo "$remote_endpoints" 2>/dev/null | grep -q "$ip"; then
+      check_ollama "http://$ip:11434" "$ip:11434" || true
+    fi
+  fi
+done
+
+if [[ $backends_found -eq 0 ]]; then
+  echo "  未检测到运行中的推理后端"
+fi
+
+# ---------------------------------------------------------------
+# 3. 推理容量评估
+# ---------------------------------------------------------------
 echo ""
-echo "--- 推理容量评估 ---"
+echo "--- 容量评估 ---"
 
 python3 -c "
-import json, subprocess
+backend = '$gpu_backend'
+free_mb = $gpu_mem_free
+total_mb = $gpu_mem_total
 
-gpu = json.loads('$gpu_info') if '$gpu_info' != '[]' else []
-backends = json.loads('$backends') if '$backends' != '[]' else []
-
-# GPU VRAM 估算可运行的模型大小
-total_free_vram = 0
-for g in gpu:
-    if g.get('backend') in ('cuda', 'rocm'):
-        total_free_vram += g.get('memory_free_mb', 0)
-
-# 经验法则：Q4 量化模型约需 参数量(GB) * 1.2 的 VRAM
-# 7B Q4 ≈ 5GB, 13B Q4 ≈ 9GB, 70B Q4 ≈ 45GB
-if total_free_vram > 0:
-    free_gb = total_free_vram / 1024
-    if free_gb >= 45:
-        tier = '70B+ (Q4)'
-    elif free_gb >= 15:
-        tier = '13B-33B (Q4)'
-    elif free_gb >= 7:
-        tier = '7B-13B (Q4)'
-    elif free_gb >= 4:
-        tier = '7B (Q4)'
-    else:
-        tier = '3B 以下'
+if backend == 'cuda' and free_mb > 0:
+    free_gb = free_mb / 1024
+    if free_gb >= 45: tier = '70B+ (Q4)'
+    elif free_gb >= 15: tier = '13B-33B (Q4)'
+    elif free_gb >= 7: tier = '7B-13B (Q4)'
+    elif free_gb >= 4: tier = '7B (Q4)'
+    else: tier = '3B 以下'
     print(f'  可用 VRAM: {free_gb:.1f}GB → 约可运行 {tier}')
-elif gpu and gpu[0].get('backend') == 'metal':
+elif backend == 'metal':
     print('  Apple Metal: 统一内存，模型大小受总内存限制')
+elif backend == 'rocm':
+    print('  AMD ROCm: 需手动评估')
 else:
-    print('  无 GPU → CPU 推理，速度约 5-15 tok/s (7B Q4)')
-
-# 已加载模型状态
-loaded = 0
-for b in backends:
-    loaded += b.get('loaded_count', 0)
-if loaded > 0:
-    print(f'  当前已加载模型: {loaded} 个')
+    print('  无 GPU → CPU 推理，7B Q4 约 5-15 tok/s')
 " 2>/dev/null || echo "  评估失败"
 
 echo ""
