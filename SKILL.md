@@ -26,14 +26,57 @@ Agent 也需要类似的能力：
 
 ---
 
-## 本体文件
+## Phase 0: 前置条件
 
 每次激活时，先读取本体 Schema：
 
 **路径**：`~/.hermes/skills/agent-embodiment/body-schema.json`
 
-如果文件存在且距上次发现 <1 小时，直接用缓存。
-如果不存在或过期 → 运行发现流程（Phase 1）。
+### 缓存检查
+
+- 文件存在且距上次发现 **< 1 小时** → 直接用缓存，跳到 Phase 4
+- 文件不存在或过期 → 运行发现流程（Phase 1）
+- 文件损坏/JSON 解析失败 → 删除重建，运行完整发现流程
+
+### 网络前置
+
+执行发现前确认网络连通。本环境涉及两个网段：
+
+- **局域网**: 192.168.x.0/24（本机通过 ZeroTier 中转可达）
+- **ZT 网络**: 192.168.x.0/24（Hermes 本机 ZT IP: 192.168.x.x）
+- **ZT → PVE**: 经 192.168.x.x 中转到 192.168.x.0/24
+- **ZT → Windows VM**: 直连（无跳板）
+
+连通性速检：
+
+```bash
+zerotier-cli status          # 确认 ZT 在线 (ONLINE)
+zerotier-cli listnetworks    # 确认网络 OK，看分配的 IP
+ping -c 1 192.168.x.100      # 测试 PVE 路由（~200ms 延迟正常）
+ping -c 1 192.168.x.109      # 测试 Windows VM
+```
+
+### SSH 配置
+
+所有远程设备通过 SSH Host 别名连接。`~/.ssh/config` 示例：
+
+```
+Host pve-zt
+  HostName 192.168.x.100
+  User root
+  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
+  ConnectTimeout 15
+
+Host win-zt
+  HostName 192.168.x.109
+  User <user>
+  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
+  ConnectTimeout 15
+```
+
+> ⚠️ **macOS 后量子 KEX 问题**: macOS OpenSSH 10.2+ 默认启用 `mlkem768x25519-sha256`，握手包 ~1.5KB，过 ZT 隧道（延迟 200ms+、MTU 2800）会分片丢失导致 **SSH 在密钥交换卡死**。必须在 SSH config 中禁用 PQ 算法（见上方配置）。
+
+> ⚠️ **Windows VM 管理员 SSH**: 管理员组的 authorized_keys 路径**不是** `~/.ssh/authorized_keys`，而是 `C:\ProgramData\ssh\administrators_authorized_keys`。设置公钥后需 `icacls` 调整权限。
 
 ---
 
@@ -43,20 +86,18 @@ Agent 也需要类似的能力：
 
 ### Step 1: 我是谁（本机探测）
 
-运行本机信息采集脚本，了解自己跑在哪里：
-
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
 ```
 
 输出示例：
+
 ```
 hostname: my-macbook
 os: macOS 15.4.1
 arch: arm64
 cpu: Apple M4 Pro (12核)
 memory_gb: 16
-gpu: Apple M4 Pro GPU
 hermes_version: v2026.4.13
 hermes_path: /Users/user/.hermes/hermes-agent
 ips: 10.x.x.x, 192.168.x.x
@@ -67,24 +108,22 @@ node: v22.x
 
 ### Step 2: 我在哪（网络发现）
 
-扫描局域网，发现存活设备：
-
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 ```
 
 扫描策略：
-1. 先读本机 IP 和子网掩码，确定扫描范围
+1. 读本机 IP 和子网掩码，确定扫描范围
 2. ping 扫描存活主机（并行，30 秒内完成）
 3. 对存活主机做端口探测（22/SSH、8006/PVE、11434/Ollama、3389/RDP）
 4. 根据端口推断设备类型
 
 输出示例：
+
 ```
 192.168.x.1    alive  ports=80,443        type=router
 192.168.x.100  alive  ports=22,8006       type=pve
 192.168.x.109  alive  ports=11434         type=windows_vm
-192.168.x.110  alive  ports=22            type=unknown
 ```
 
 ### Step 3: 生成/更新 Schema
@@ -93,30 +132,55 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 
 ---
 
-## Phase 2: 设备探测
+## Phase 2: 设备探测 + 操作速查
 
-对已发现的每个设备，进一步探测能力和状态：
+对已发现的每个设备，进一步探测能力和状态。每个设备类型附带操作速查卡。
 
 ### PVE（虚拟化平台）
 
-```bash
-# 列出所有 VM 及状态
-ssh root@<pve_ip> "qm list"
+**探测**：
 
-# 获取详细资源
-ssh root@<pve_ip> "pvesh get /cluster/resources --type vm --output-format json"
+```bash
+ssh pve-zt "qm list"                                    # 列出 VM 状态
+ssh pve-zt "pvesh get /cluster/resources --type vm --output-format json"  # 详细资源
+```
+
+**操作速查**：
+
+```bash
+# VM 生命周期
+ssh pve-zt "qm list"                   # 查看所有 VM 状态
+ssh pve-zt "qm start 103"              # 启动 VM
+ssh pve-zt "qm shutdown 103"           # 正常关机
+ssh pve-zt "qm stop 103"               # 强制关机（危险！）
+ssh pve-zt "qm config 103"             # 查看 VM 详情
+ssh pve-zt "ip neigh | grep -i '<mac>'"  # 查找 VM IP（ARP 表）
 ```
 
 提取：VMID、名称、状态（running/stopped）、CPU/内存分配、磁盘大小。
 
 ### Windows VM
 
-```bash
-# Ollama 模型列表（不需要 SSH）
-curl -s http://<vm_ip>:11434/api/tags
+**探测**：
 
-# 系统信息（需要 SSH，可能失败）
-sshpass -p "$WIN_VM_PASSWORD" ssh <user>@<vm_ip> "systeminfo"
+```bash
+curl -s http://192.168.x.109:11434/api/tags    # Ollama 模型列表（无需 SSH）
+ssh win-zt "hostname && whoami"                  # SSH 测试（可能不稳定）
+```
+
+**操作速查**：
+
+```bash
+# SSH 免密执行
+ssh win-zt "hostname && whoami"
+
+# 需要密码时用 sshpass
+sshpass -p "$WIN_VM_PASSWORD" ssh -o StrictHostKeyChecking=no user@192.168.x.109 "command"
+
+# Ollama API（推荐，无需 SSH）
+curl -s http://192.168.x.109:11434/api/tags | python3 -m json.tool
+curl -s http://192.168.x.109:11434/api/show -d '{"model": "model-name"}' | python3 -m json.tool
+curl -s http://192.168.x.109:11434/api/generate -d '{"model": "model-name", "prompt": "Hello", "stream": false}'
 ```
 
 ### macOS VM
@@ -128,9 +192,8 @@ ssh <user>@<vm_ip> "sw_vers; sysctl -n machdep.cpu.brand_string; system_profiler
 ### 网络设备（路由器等）
 
 ```bash
-# 简单探测
-curl -s -o /dev/null -w "%{http_code}" http://<router_ip>
-nmap -sV -p 80,443,8080 <router_ip>
+curl -s -o /dev/null -w "%{http_code}" http://<router_ip>   # 简单探测
+nmap -sV -p 80,443,8080 <router_ip>                          # 端口扫描
 ```
 
 ---
@@ -165,7 +228,7 @@ nmap -sV -p 80,443,8080 <router_ip>
 
 发现结果 + 已有配置 = 完整的 body-schema。
 
-### 合并流程（具体步骤）
+### 合并流程
 
 ```python
 # 伪代码，实际由 agent 执行
@@ -191,15 +254,11 @@ nmap -sV -p 80,443,8080 <router_ip>
 
 ### 跨网段处理
 
-本机可能在不同子网（如 10.x.x.x），设备在 192.168.x.x。
-ARP 扫描只能扫本机所在网段。
+本机可能在不同子网（如 10.x.x.x），设备在 192.168.x.x。ARP 扫描只能扫本机所在网段。
 
-**解决方案**：
-- 对已知网段逐一扫描（从 body-schema.json 的 environment.networks 读取）
-- 或直接用已配置的 IP 做连通性测试（跳过 ARP 扫描）
+解决方案：对已知网段逐一扫描（从 body-schema.json 的 environment.networks 读取），或直接用已配置的 IP 做连通性测试：
 
 ```bash
-# 跨网段直接测试
 for ip in 192.168.x.100 192.168.x.109; do
   if ping -c 1 -t 2 "$ip" >/dev/null 2>&1; then
     echo "$ip alive"
@@ -208,6 +267,7 @@ done
 ```
 
 ### 合并规则
+
 1. 自动发现的设备 → 新增或更新（标记 `discovered: true`）
 2. 手动配置的设备 → 保留不动（标记 `discovered: false`）
 3. 缓存中存在但本次未发现的设备 → 标记 `status: unreachable`，不删除
@@ -230,7 +290,7 @@ done
   },
   "environment": {
     "timezone": "Asia/Shanghai",
-    "network": "192.168.x.0/24",
+    "networks": ["192.168.x.0/24", "192.168.x.0/24"],
     "gateway": "192.168.x.1"
   },
   "devices": [
@@ -240,7 +300,7 @@ done
       "name": "Proxmox VE",
       "ip": "192.168.x.100",
       "os": "Proxmox VE 8.x",
-      "access": "ssh:root@192.168.x.100",
+      "access": "ssh:pve-zt",
       "capabilities": ["vm_lifecycle", "vm_console", "storage", "network"],
       "safety_level": "high",
       "vms": [
@@ -249,7 +309,7 @@ done
       ],
       "discovered": true,
       "status": "reachable",
-      "notes": "直接连接，无跳板机"
+      "notes": "ZT 中转可达，SSH config 别名 pve-zt"
     },
     {
       "id": "win-vm",
@@ -291,7 +351,7 @@ done
   "discovery_meta": {
     "last_full_discovery": "2026-04-14T11:00:00+08:00",
     "last_incremental": "2026-04-14T11:30:00+08:00",
-    "schema_version": "1.0"
+    "schema_version": "1.1"
   }
 }
 ```
@@ -353,12 +413,45 @@ done
 
 ---
 
+## 发现脚本
+
+所有脚本在 `~/.hermes/skills/agent-embodiment/scripts/` 下：
+
+| 脚本 | 功能 | 耗时 |
+|------|------|------|
+| `discover-self.sh` | 本机信息采集 | <5秒 |
+| `discover-network.sh` | 局域网扫描 | ~30秒 |
+| `discover-pve.sh` | PVE VM 列表 | ~5秒 |
+| `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
+
+手动运行全部发现：
+
+```bash
+for script in ~/.hermes/skills/agent-embodiment/scripts/discover-*.sh; do
+  echo "=== $(basename $script) ==="
+  bash "$script"
+done
+```
+
+### 脚本失败 Fallback
+
+| 场景 | Fallback |
+|------|---------|
+| discover-self.sh 失败 | 用 `uname -a`、`hostname` 等基础命令逐个采集 |
+| discover-network.sh 无结果 | 直接 ping 已知 IP（从 body-schema.json 读取） |
+| discover-pve.sh SSH 失败 | 尝试 Ollama API 确认 VM 是否在线 |
+| discover-ollama.sh 跨网段扫不到 | 用配置的 endpoint 直连测试 |
+| body-schema.json 不存在 | 运行全部 discover 脚本，生成初始 schema |
+| 脚本无执行权限 | `chmod +x` 后重试，或直接 `bash` 执行 |
+
+---
+
 ## 使用场景
 
 ### 用户问「你跑在什么上面？」
 
 → 读 body-schema.json，告诉用户：
-「我跑在你的 MacBook Pro 上，M1 芯片，16GB 内存，macOS 26.3。」
+「我跑在你的 MacBook Pro 上，M4 Pro 芯片，16GB 内存，macOS 15.4.1。」
 
 ### 用户问「你能控制什么？」
 
@@ -379,38 +472,6 @@ done
 影响：Windows VM 将重启，Ollama 推理中断，约 2 分钟恢复
 可逆性：否（重启无法撤回，但可以重新启动）
 确认执行？[是/否]
-```
-
-### 发现脚本失败时的 fallback
-
-| 场景 | Fallback |
-|------|---------|
-| discover-self.sh 失败 | 用 `uname -a`、`hostname` 等基础命令逐个采集 |
-| discover-network.sh 无结果 | 直接 ping 已知 IP（从 body-schema.json 读取） |
-| discover-pve.sh SSH 失败 | 尝试 Ollama API 确认 VM 是否在线 |
-| discover-ollama.sh 跨网段扫不到 | 用配置的 endpoint 直连测试 |
-| body-schema.json 不存在 | 运行全部 discover 脚本，生成初始 schema |
-
----
-
-## 发现脚本
-
-所有脚本在 `~/.hermes/skills/agent-embodiment/scripts/` 下：
-
-| 脚本 | 功能 | 耗时 |
-|------|------|------|
-| `discover-self.sh` | 本机信息采集 | <5秒 |
-| `discover-network.sh` | 局域网扫描 | ~30秒 |
-| `discover-pve.sh` | PVE VM 列表 | ~5秒 |
-| `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
-
-### 手动运行全部发现
-
-```bash
-for script in ~/.hermes/skills/agent-embodiment/scripts/discover-*.sh; do
-  echo "=== $(basename $script) ==="
-  bash "$script"
-done
 ```
 
 ---
@@ -454,120 +515,28 @@ done
 
 ---
 
-## 连接实操
+## 排障速查
 
-### ZeroTier 网络
-
-- **ZT 网络 ID**: `b15644912e5cbed4`（网络名 `Lnternet`）
-- **Hermes 本机 ZT IP**: `192.168.x.x`
-- **ZT → PVE 路由**: 通过 `192.168.x.x` 中转到 `192.168.x.0/24`
-- **ZT → Windows VM**: ZT 直连（无跳板）
-
-常用命令：
-```bash
-zerotier-cli status           # 确认 ONLINE
-zerotier-cli listnetworks     # 确认网络 OK，看分配的 IP
-ping 192.168.x.100            # 测试路由（~200ms 延迟正常）
-```
-
-### SSH 配置（~/.ssh/config）
-
-```
-Host pve-zt
-  HostName 192.168.x.100
-  User root
-  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
-  ConnectTimeout 15
-
-Host win-zt
-  HostName 192.168.x.109
-  User <user>
-  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
-  ConnectTimeout 15
-
-Host 192.168.x.100
-  User root
-  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
-  ConnectTimeout 15
-```
-
-快速使用：`ssh pve-zt`、`ssh win-zt`
-
-### macOS SSH over ZT — 后量子 KEX 问题（关键踩坑）
-
-macOS OpenSSH 10.2+ 默认启用后量子密钥交换算法 `mlkem768x25519-sha256`，握手包约 1.5KB。过 ZT 隧道（延迟 200ms+、MTU 2800）时会分片丢失，导致 **SSH 在密钥交换阶段卡死**。
-
-**症状**: `nc -z` 端口可达，`ping` 正常，但 SSH 永远超时，verbose 输出卡在 `expecting SSH2_MSG_KEX_ECDH_REPLY`。
-
-**修复**: SSH config 中对 ZT 目标禁用 PQ 算法（见上方配置）。
-
-### Windows VM SSH — 管理员 authorized_keys 路径（关键踩坑）
-
-Windows OpenSSH 管理员组用户的 authorized_keys 路径**不是** `~/.ssh/authorized_keys`！
-`sshd_config` 中 `Match Group administrators` 规则将其覆盖为：
-```
-C:\ProgramData\ssh\administrators_authorized_keys
-```
-
-设置公钥：
-```powershell
-# 在 Windows VM 上执行
-Add-Content 'C:\ProgramData\ssh\administrators_authorized_keys' 'ssh-ed25519 AAAA... you@email.com'
-icacls 'C:\ProgramData\ssh\administrators_authorized_keys' /inheritance:r /grant SYSTEM:F /grant Administrators:F
-```
-
-### PVE 管理命令
-
-```bash
-# 查看所有 VM 状态
-ssh pve-zt "qm list"
-
-# 启动/关闭 VM
-ssh pve-zt "qm start 103"
-ssh pve-zt "qm shutdown 103"    # 正常关机
-ssh pve-zt "qm stop 103"        # 强制关机（危险！）
-
-# 查看 VM 详情
-ssh pve-zt "qm config 103"
-
-# 查找 VM IP（通过 ARP 表）
-ssh pve-zt "ip neigh | grep -i '<mac_addr>'"
-```
-
-### Windows VM 命令
-
-```bash
-# 免密执行
-ssh win-zt "hostname && whoami"
-
-# 需要密码时用 sshpass
-sshpass -p 'Zen7426@edge2' ssh -o StrictHostKeyChecking=no user@192.168.x.109 "command"
-
-# Ollama API（不需要 SSH）
-curl -s http://192.168.x.109:11434/api/tags | python3 -m json.tool
-curl -s http://192.168.x.109:11434/api/show -d '{"model": "model-name"}' | python3 -m json.tool
-curl -s http://192.168.x.109:11434/api/generate -d '{"model": "model-name", "prompt": "Hello", "stream": false}'
-```
-
-### ZT 排障速查
+### ZeroTier
 
 1. `zerotier-cli status` → 确认 ONLINE
 2. `zerotier-cli listnetworks` → 确认网络 OK，看分配的 IP
 3. `ping 192.168.x.100` → 确认路由可达
 4. `nc -z -w5 192.168.x.100 22` → 确认端口 open
-5. SSH 卡在 `KEXINIT` / `KEX_ECDH_REPLY` → 后量子算法问题，加 `KexAlgorithms`
-6. SSH Permission denied 但密码正确 → 检查 authorized_keys 路径（Windows 管理员用 `ProgramData\ssh\`）
-7. ZT 重连后端口仍不通 → 先 `leave` 再 `join` 重新加入网络
+5. ZT 重连后端口仍不通 → 先 `leave` 再 `join` 重新加入网络
 
-### HuggingFace 模型下载
+### SSH
 
-部分 HuggingFace 模型需要登录认证（401 错误）。需先在 HF 页面点 Agree 接受协议，然后配置 token：
-```bash
-# 在 Windows VM 上设置
-setx HF_TOKEN "hf_xxxxx"
-# 下载时加 header
-curl -L -H "Authorization: Bearer hf_xxxxx" -o model.gguf "https://huggingface.co/.../resolve/main/file.gguf"
-```
+6. SSH 卡在 `KEXINIT` / `KEX_ECDH_REPLY` → 后量子算法问题，加 `KexAlgorithms`（见 Phase 0）
+7. SSH Permission denied 但密码正确 → Windows 管理员检查 `C:\ProgramData\ssh\administrators_authorized_keys`
+
+### HuggingFace
+
+8. 下载 401 错误 → 需先在 HF 页面点 Agree 接受协议，然后配置 token：
+   ```bash
+   setx HF_TOKEN "hf_xxxxx"
+   curl -L -H "Authorization: Bearer hf_xxxxx" -o model.gguf "https://huggingface.co/.../resolve/main/file.gguf"
+   ```
 
 ---
 
@@ -582,5 +551,5 @@ curl -L -H "Authorization: Bearer hf_xxxxx" -o model.gguf "https://huggingface.c
 ---
 
 **维护者**: 劲阳
-**最后更新**: 2026-04-14
-**版本**: 2.0 (从 homelab-control 重写)
+**最后更新**: 2026-04-15
+**版本**: 2.1 (结构重组：整合连接实操、统一 Phase 入口)
