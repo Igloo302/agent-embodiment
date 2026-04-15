@@ -5,6 +5,7 @@ description: |
   自动发现运行环境、扫描网络设备、维护持久化的本体 Schema、安全分级执行操作。
   触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态、开关机、启动/关闭VM、查看虚拟机状态、SSH连接、Ollama、本地模型、GPU状态、VRAM、推理能力、模型部署、算力。
   也适用于：用户问「你跑在什么上面」「你能控制哪些设备」「看看我的网络环境」。
+  English triggers: what am I running on, my devices, scan network, what can I control, my environment, system status.
 ---
 
 # Agent Embodiment · 身体感
@@ -33,25 +34,38 @@ Agent 也需要类似的能力：
 
 **路径**：`~/.hermes/skills/agent-embodiment/body-schema.json`
 
+### 发现模式选择
+
+| 用户意图 | 模式 | 动作 |
+|---------|------|------|
+| 问「我在哪跑」「有什么设备」 | **快速读取** | 直接读 schema，不过期则跳过发现 |
+| 说「扫描网络」「看看环境」 | **定向发现** | 只跑相关脚本（如 discover-network.sh） |
+| 首次激活 / schema 缺失 | **完整发现** | 跑 Phase 1-3 全流程 |
+
 ### 缓存检查
 
 - 文件存在且距上次发现 **< 1 小时** → 直接用缓存，跳到 Phase 4
-- 文件不存在 → 运行完整发现流程（Phase 1），生成初始 schema
+- 文件不存在 → 完整发现（Phase 1→2→3）
 - 文件损坏/JSON 解析失败 → 删除重建
+- 距上次发现 **> 24 小时** 且用户要求操作 → 建议刷新后再操作
 
 ### 新用户首次激活
 
-schema 为空时，只需运行：
+schema 为空时，运行：
 
 ```bash
 python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
 
-它会自动跑所有发现脚本并生成初始 schema。
+merge-schema.py 自动跑所有发现脚本并生成初始 schema。之后按需进入 Phase 2。
 
 ---
 
 ## Phase 1: 自我发现
+
+按需运行脚本。**定向发现**只跑相关的，**完整发现**全跑。
+
+### 本机信息
 
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
@@ -59,13 +73,25 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
 
 采集：hostname、OS、架构、CPU、内存、IP、Hermes 版本、Python/Docker/Node 状态。
 
+**失败 fallback**：
+```bash
+echo "hostname:$(hostname) os:$(uname -s) arch:$(uname -m) ip:$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
+```
+
 ### 网络发现
 
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 ```
 
-自动执行：存活探测（schema 已知 IP + ARP 补充）→ 端口扫描（SSH/HTTP/SMB/Ollama/PVE 等 27 种端口）→ mDNS/Bonjour 服务发现。
+自动执行：存活探测（schema 已知 IP + ARP 补充）→ 端口扫描（SSH/HTTP/SMB/Ollama/PVE 等 27 种端口）→ mDNS/Bonjour。
+
+**失败 fallback**：
+```bash
+# 只扫本机子网前 20 个 IP
+net=$(ipconfig getifaddr en0 2>/dev/null | cut -d. -f1-3)
+for i in $(seq 1 20); do ping -c 1 -t 1 ${net}.$i 2>/dev/null && echo "${net}.$i alive"; done
+```
 
 ### 推理能力
 
@@ -87,20 +113,56 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
 
 ## Phase 2: 设备探测
 
-对已发现的设备进一步探测。具体命令取决于设备类型——Agent 根据 body-schema.json 中的 `type` 和 `capabilities` 自行决定。
+Phase 1 发现了存活主机和端口后，对特定设备做深入探测。Agent 按以下决策树执行：
 
-常见设备类型：
+```
+遍历 body-schema.json 的 devices 列表：
+  ├── hypervisor → 运行 discover-pve.sh 或 SSH `qm list`
+  ├── vm → 根据 access.method 连接（SSH/HTTP）
+  ├── docker_host → `docker ps` / Docker API
+  ├── inference_server → GET /api/tags 或 /v1/models
+  ├── nas → DSM API / SMB 列共享
+  └── smart_home → 对应 skill 探测
+```
 
-| type | 探测方式 |
-|------|---------|
-| `hypervisor` (PVE 等) | SSH `qm list` / API |
-| `vm` | SSH / HTTP API |
-| `nas` (Synology 等) | DSM API / SMB |
-| `docker_host` | `docker ps` / Docker API |
-| `smart_home` | 对应 skill 探测 |
-| `inference_server` | HTTP API (`/api/tags`, `/v1/models`) |
+### 具体步骤
 
-Agent 不需要在 skill 里记住每个设备的具体命令。body-schema.json 的 `access` 字段告诉 Agent 怎么连，`capabilities` 告诉 Agent 能做什么。
+1. 读 schema 的 `devices` 列表
+2. 对每个设备，按 `type` 选择探测方式
+3. 用 `access` 字段的连接信息（SSH key / API URL / 端口）
+4. 探测结果更新到 schema 的 `status` 和 `capabilities`
+5. 新发现的设备追加到 `devices`
+
+### 每种 type 的探测命令
+
+| type | 探测命令 | 信息来源 |
+|------|---------|---------|
+| `hypervisor` | `~/.hermes/skills/agent-embodiment/scripts/discover-pve.sh <ip>` | PVE API `qm list` |
+| `vm` | SSH `uname -a && df -h && free -h` | 直接 SSH |
+| `docker_host` | `docker ps -a --format '{{.Names}} {{.Status}}'` | Docker API |
+| `inference_server` | `curl -s http://<ip>:11434/api/tags` | HTTP API |
+| `nas` | `curl -s http://<ip>:5000/webapi/entry.cgi` | DSM API |
+| `smart_home` | 由 homeassistant skill 处理 | 对应 skill |
+
+如果 `access` 字段不可用（缺密码/key），跳过该设备，标记 `status: auth_required`。
+
+---
+
+## Phase 2.5: 发现确认点
+
+Phase 1+2 完成后，暂停确认：
+
+```
+📡 发现完成：
+  - 本机：{hostname} ({os} {arch})
+  - 网络设备：{N} 台存活，{M} 台已探测
+  - 推理能力：{摘要}
+
+这些信息正确吗？需要手动添加/修改设备吗？
+确认后进入操作阶段。
+```
+
+用户确认后再进入 Phase 4。用户也可以在此阶段补充设备信息。
 
 ---
 
@@ -130,11 +192,20 @@ Agent 不需要在 skill 里记住每个设备的具体命令。body-schema.json
 
 ## Phase 3: Schema 自动合并
 
+Phase 1+2 的结果写入 schema：
+
 ```bash
 python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
 
-自动执行：读 schema → discover-self → 测试连通性 → 检测推理后端 → 合并写回。
+### 什么时候跑
+
+| 场景 | 跑不跑 |
+|------|--------|
+| 完整发现（Phase 1 全跑） | **必须跑**，合并所有结果 |
+| 定向发现（只跑了 1-2 个脚本） | 跑，merge-schema.py 会只更新变化部分 |
+| 只读 schema 回答问题 | **不跑**，直接读现有 schema |
+| 用户手动改了 schema | 不跑，手动修改优先级更高 |
 
 ### 合并规则
 
@@ -177,6 +248,8 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ## Phase 4.5: 动作验证闭环
 
+操作完成后必须验证：
+
 ```bash
 bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target> [expected]
 ```
@@ -195,18 +268,45 @@ bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target
 | `disk-space` | `<mount> <max%>` | 磁盘使用率 |
 | `network-check` | `<ip> <ports>` | 多端口批量检查 |
 
+### 验证失败处理
+
+- 等待 5 秒后重试一次（启动有延迟）
+- 仍失败 → 汇报失败详情，建议可能原因
+- **不自动重试操作** — 避免循环
+
 ---
 
 ## Phase 5: 持久化
 
-发现完成后，把关键信息写入 agent 持久记忆：
+发现完成后，用 memory 工具写入持久记忆：
 
 ```
-**Agent 本体**: 跑在 <hostname> 上，Hermes v2026.x.x
-**可控设备**: <设备列表>
-**已知限制**: <踩过的坑>
-**最后发现**: <日期>
+memory(action="add", target="memory", content="**Agent 本体**: 跑在 <hostname> 上，Hermes v2026.x.x
+**可控设备**: <设备列表摘要>
+**已知限制**: <踩过的坑，如 PVE SSH 超时、ZT 网络延迟>
+**最后发现**: <日期>")
 ```
+
+同时更新 discovery_meta：
+
+```bash
+# 在 body-schema.json 中更新 last_full_discovery
+python3 -c "
+import json, datetime
+p = os.path.expanduser('~/.hermes/skills/agent-embodiment/body-schema.json')
+s = json.load(open(p))
+s['discovery_meta']['last_full_discovery'] = datetime.datetime.now().isoformat()
+json.dump(s, open(p, 'w'), indent=2)
+"
+```
+
+### 写什么 vs 不写什么
+
+| 写入 memory | 不写入 |
+|-------------|--------|
+| 设备类型和 IP | 密码/密钥 |
+| 能力摘要 | 完整 model list（太长） |
+| 踩过的坑 | 临时状态（如当前 CPU 占用） |
 
 ---
 
@@ -219,7 +319,7 @@ bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target
 | `discover-self.sh` | 本机信息 |
 | `discover-hardware.sh` | 音频/蓝牙/显示器/摄像头/USB/存储 |
 | `discover-network.sh` | 网络发现（存活探测 + 端口 + mDNS） |
-| `discover-mdns.sh` | mDNS/Bonjour 服务发现 |
+| `discover-mdns.sh` | mDNS/Bonjour 服务发现（discover-network.sh 也会调用） |
 | `discover-pve.sh` | PVE VM 列表（可选插件） |
 | `discover-inference.sh` | GPU/VRAM/推理后端/模型 |
 | `merge-schema.py` | 自动合并 → body-schema.json |
@@ -268,4 +368,4 @@ bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target
 
 **维护者**: 劲阳
 **最后更新**: 2026-04-15
-**版本**: 3.0 (精简瘦身 + 通用化 + 脚本整合)
+**版本**: 3.1 (发现模式 + 设备决策流 + 验证回退 + 持久化具体化)

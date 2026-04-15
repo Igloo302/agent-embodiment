@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "prompt": "你跑在什么上面？你都能控制哪些东西？",
+    "expected": "读取 body-schema.json，汇报自身环境（hostname/OS/IP）+ 可控设备清单（devices 列表 + capabilities），用清晰的列表格式"
+  },
+  {
+    "id": 2,
+    "prompt": "帮我看看网络里有什么设备，Ollama 有没有在跑",
+    "expected": "运行 discover-network.sh 发现存活主机和端口，汇报网络拓扑和 Ollama 服务状态，附带推理能力摘要"
+  },
+  {
+    "id": 3,
+    "prompt": "重启 PVE 上 ID 为 102 的虚拟机",
+    "expected": "查 schema 获取 PVE 设备信息 → 触发中/高风险确认模板 → 确认后执行 → verify-action.sh 验证 VM 状态，完整安全流程"
+  }
+]
