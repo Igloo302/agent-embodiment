@@ -36,11 +36,10 @@ Agent：跑在 MacBook Pro 上，macOS 26.3，Apple M1，16GB 内存。
 ## 安装
 
 ```bash
-cd ~/.hermes/skills/
-git clone https://github.com/<your-username>/agent-embodiment.git
+hermes skills install <your-username>/agent-embodiment
 ```
 
-首次激活，生成初始 Schema：
+首次使用，生成初始 Schema：
 
 ```bash
 python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
