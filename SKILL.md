@@ -26,6 +26,37 @@ Agent 也需要类似的能力：
 
 ---
 
+## 环境上下文
+
+激活时同步感知的两个维度——不是脚本，是读取 session 状态。
+
+### 平台感知
+
+Agent 的会话来源包含当前平台信息。读取后据此调整行为：
+
+| 平台 | 风格 |
+|------|------|
+| Telegram | 简洁，不用 markdown，可以发语音/图片 |
+| 飞书 | 工作场景，紧凑排版，可用富文本 |
+| Discord | 可以用代码块、较长回复 |
+| 微信 | 最简洁，不用格式，纯文字 |
+
+知道自己「站在哪个通道里」，就不需要用户说「别发 markdown」。
+
+### 时间感知
+
+每次激活时读取当前时间（`date`），结合 body-schema.json 的 timezone 判断：
+
+- **深夜 (23:00-07:00)**：用户可能在休息，非紧急操作延后或格外谨慎确认
+- **工作时间 (09:00-18:00)**：用户可能在忙，回复简洁高效
+- **晚间 (18:00-23:00)**：用户可能在休闲，可以更放松
+
+时间信息也可以用于：
+- 「上次发现是 3 小时前」→ 提示 schema 可能过时
+- 「VM 上次重启是凌晨 2 点」→ 推断可能是自动更新
+
+---
+
 ## Phase 0: 前置条件
 
 每次激活时，先读取本体 Schema：
@@ -420,58 +451,6 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ---
 
-## Phase 4.5: 动作验证闭环
-
-执行操作后**必须验证结果**，不能「做了就完了」。
-
-### 验证脚本
-
-```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target> [expected] [timeout]
-```
-
-返回 JSON：`{"status": "pass"|"fail", "detail": "...", "verified_at": "..."}`
-
-### 可验证的动作
-
-| 动作 | 参数 | 用途 |
-|------|------|------|
-| `vm-running` | `<pve> <vmid>` | VM 是否在运行 |
-| `vm-stopped` | `<pve> <vmid>` | VM 是否已停止 |
-| `ssh-reachable` | `<ip>` | SSH 端口是否开放 |
-| `ping-reachable` | `<ip>` | 主机是否可达 |
-| `service-up` | `<url>` | HTTP 服务是否响应 |
-| `ollama-up` | `<base-url>` | Ollama 是否在线 |
-| `ollama-model` | `<base-url> <model>` | 模型是否存在 |
-| `ollama-model-loaded` | `<base-url> <model>` | 模型是否已加载到 VRAM |
-| `process-running` | `<name>` | 进程是否在跑 |
-| `disk-space` | `<mount> <max%>` | 磁盘使用率是否低于阈值 |
-| `port-open` | `<ip> <port>` | 端口是否开放 |
-| `network-check` | `<ip> <ports>` | 多端口批量检查 |
-
-### 使用流程
-
-```
-用户：「重启 Win VM」
-  ↓
-Agent：⚠️ 中风险确认 → 用户确认
-  ↓
-Agent：执行 qm reboot 103
-  ↓
-Agent：verify-action.sh vm-running pve 103
-  ↓
-pass → 「✅ Win VM 已重启成功，Ollama 在线」
-fail → 「❌ Win VM 重启后未起来，检查中...」
-```
-
-### 验证失败时的处理
-
-1. **自动重试**：网络类验证失败 → 等 5 秒重试一次
-2. **报告原因**：返回具体失败细节（端口未开 / 超时 / 状态不对）
-3. **建议下一步**：「VM 启动慢？可等 30 秒再检查」或「SSH 不通，试试 Ollama API」
-
----
-
 ## Phase 5: 持久化
 
 ### 写入 MEMORY.md
@@ -506,7 +485,6 @@ fail → 「❌ Win VM 重启后未起来，检查中...」
 | `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
 | `discover-inference.sh` | **推理能力探测**（GPU/VRAM/后端/模型） | ~10秒 |
 | `merge-schema.py` | **Phase 3 自动合并**（运行所有脚本 + 写入 schema） | ~90秒 |
-| `verify-action.sh` | **Phase 4.5 动作验证**（操作后闭环检查，返回 pass/fail） | ~5秒 |
 
 手动运行全部发现：
 
