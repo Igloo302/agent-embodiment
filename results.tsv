@@ -2,3 +2,4 @@ timestamp	commit	skill	old_score	new_score	status	dimension	note	eval_mode
 2026-04-14T13:20	baseline	agent-embodiment	-	68	baseline	-	初始评估	dry_run
 2026-04-14T13:47	aabd304	agent-embodiment	68	81	keep	综合	补全安全确认模板、合并流程、fallback、跨网段发现	full_test
 2026-04-14T14:41	94b3323	agent-embodiment	81	84	keep	实测+指令	重写 network 扫描、PVE fallback、4/4 脚本测试通过	full_test
+2026-04-15T09:45	bad7a50	agent-embodiment	84	86	keep	架构+工作流	结构重组：连接实操整合进Phase2，新增Phase0前置，去除冗余	dry_run
