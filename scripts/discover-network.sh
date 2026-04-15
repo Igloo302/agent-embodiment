@@ -43,9 +43,9 @@ while IFS='|' read -r did name ip; do
   if ping -c 1 -t 2 "$ip" >/dev/null 2>&1; then
     status="alive"
 
-    # 端口探测
+    # 端口探测（基础服务 + NAS 常见端口）
     services=""
-    for port in 22 80 443 3389 8006 9119 11434; do
+    for port in 22 80 443 53 139 445 2049 3306 3389 5000 5001 5432 6379 8006 8080 8096 8443 9091 9119 11434 32400; do
       result=$(check_port "$ip" "$port")
       [[ -n "$result" ]] && services="${services}${port} "
     done

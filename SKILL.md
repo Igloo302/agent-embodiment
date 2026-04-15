@@ -460,7 +460,10 @@ done
 | 脚本 | 功能 | 耗时 |
 |------|------|------|
 | `discover-self.sh` | 本机信息采集 | <5秒 |
-| `discover-network.sh` | 局域网扫描 | ~30秒 |
+| `discover-hardware.sh` | **本机硬件**（音频/蓝牙/显示器/摄像头/USB/打印机/存储） | <10秒 |
+| `discover-network.sh` | 局域网扫描（含 NAS 端口） | ~30秒 |
+| `discover-mdns.sh` | **mDNS/Bonjour 发现**（AirPlay/Chromecast/SMB/HomeKit/打印机） | ~30秒 |
+| `discover-nas.sh` | NAS/家庭服务专项探测 | ~60秒 |
 | `discover-pve.sh` | PVE VM 列表 | ~5秒 |
 | `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
 | `discover-inference.sh` | **推理能力探测**（GPU/VRAM/后端/模型） | ~10秒 |
