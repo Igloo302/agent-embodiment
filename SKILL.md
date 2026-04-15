@@ -420,6 +420,58 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ---
 
+## Phase 4.5: 动作验证闭环
+
+执行操作后**必须验证结果**，不能「做了就完了」。
+
+### 验证脚本
+
+```bash
+bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target> [expected] [timeout]
+```
+
+返回 JSON：`{"status": "pass"|"fail", "detail": "...", "verified_at": "..."}`
+
+### 可验证的动作
+
+| 动作 | 参数 | 用途 |
+|------|------|------|
+| `vm-running` | `<pve> <vmid>` | VM 是否在运行 |
+| `vm-stopped` | `<pve> <vmid>` | VM 是否已停止 |
+| `ssh-reachable` | `<ip>` | SSH 端口是否开放 |
+| `ping-reachable` | `<ip>` | 主机是否可达 |
+| `service-up` | `<url>` | HTTP 服务是否响应 |
+| `ollama-up` | `<base-url>` | Ollama 是否在线 |
+| `ollama-model` | `<base-url> <model>` | 模型是否存在 |
+| `ollama-model-loaded` | `<base-url> <model>` | 模型是否已加载到 VRAM |
+| `process-running` | `<name>` | 进程是否在跑 |
+| `disk-space` | `<mount> <max%>` | 磁盘使用率是否低于阈值 |
+| `port-open` | `<ip> <port>` | 端口是否开放 |
+| `network-check` | `<ip> <ports>` | 多端口批量检查 |
+
+### 使用流程
+
+```
+用户：「重启 Win VM」
+  ↓
+Agent：⚠️ 中风险确认 → 用户确认
+  ↓
+Agent：执行 qm reboot 103
+  ↓
+Agent：verify-action.sh vm-running pve 103
+  ↓
+pass → 「✅ Win VM 已重启成功，Ollama 在线」
+fail → 「❌ Win VM 重启后未起来，检查中...」
+```
+
+### 验证失败时的处理
+
+1. **自动重试**：网络类验证失败 → 等 5 秒重试一次
+2. **报告原因**：返回具体失败细节（端口未开 / 超时 / 状态不对）
+3. **建议下一步**：「VM 启动慢？可等 30 秒再检查」或「SSH 不通，试试 Ollama API」
+
+---
+
 ## Phase 5: 持久化
 
 ### 写入 MEMORY.md
@@ -454,6 +506,7 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 | `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
 | `discover-inference.sh` | **推理能力探测**（GPU/VRAM/后端/模型） | ~10秒 |
 | `merge-schema.py` | **Phase 3 自动合并**（运行所有脚本 + 写入 schema） | ~90秒 |
+| `verify-action.sh` | **Phase 4.5 动作验证**（操作后闭环检查，返回 pass/fail） | ~5秒 |
 
 手动运行全部发现：
 
