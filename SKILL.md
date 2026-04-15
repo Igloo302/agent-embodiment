@@ -205,6 +205,19 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
 3. **模型清单** — 每个模型的参数量、量化方式、大小、是否已加载
 4. **容量评估** — 根据可用 VRAM 估算能跑多大的模型
 
+### MoE 模型理解
+
+"Gemma 4 E4B" 中的 "E" = **Effective 参数**（MoE 混合专家架构）：
+- 总参数 8B — 知识容量
+- 每次推理只激活 ~4B 参数 — 实际计算量
+- 效果：推理速度相当于 4B 模型，知识质量接近更大模型
+- 实测：E4B 在所有 benchmark 上碾压 Gemma 3 27B
+
+12GB VRAM 甜点：
+- **E4B (8B Q4)** — ~10GB VRAM，115 tok/s (RTX 5070)，最佳选择
+- **13B Q4** — ~8GB VRAM，80+ tok/s，质量更高
+- **26B MoE (4B active)** — 18GB，放不下 12GB 卡
+
 输出示例：
 
 ```
