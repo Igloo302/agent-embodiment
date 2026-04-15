@@ -3,7 +3,7 @@ name: agent-embodiment
 description: |
   让 Agent 理解自己的「身体」和所处的物理世界——我是谁、我在哪、我能控制什么、我的边界。
   自动发现运行环境、扫描网络设备、维护持久化的本体 Schema、安全分级执行操作。
-  触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态。
+  触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态、开关机、启动/关闭VM、查看虚拟机状态、SSH连接、Ollama。
   也适用于：用户问「你跑在什么上面」「你能控制哪些设备」「看看我的网络环境」。
 ---
 
@@ -419,7 +419,6 @@ done
 
 | Skill | 关系 |
 |-------|------|
-| `homelab-control` | 提供具体设备的控制命令（SSH、PVE API），embodiment 调用它执行操作 |
 | `openhue` | 智能家居设备，可纳入 embodiment 的 devices 列表 |
 | `memory` | embodiment 的发现结果写入持久记忆 |
 | `cron` | 可定期跑发现脚本，保持环境感知最新 |
@@ -452,6 +451,123 @@ done
 ```
 
 这样 embodiment 就成了所有设备的**统一注册中心**。
+
+---
+
+## 连接实操
+
+### ZeroTier 网络
+
+- **ZT 网络 ID**: `b15644912e5cbed4`（网络名 `Lnternet`）
+- **Hermes 本机 ZT IP**: `192.168.x.x`
+- **ZT → PVE 路由**: 通过 `192.168.x.x` 中转到 `192.168.x.0/24`
+- **ZT → Windows VM**: ZT 直连（无跳板）
+
+常用命令：
+```bash
+zerotier-cli status           # 确认 ONLINE
+zerotier-cli listnetworks     # 确认网络 OK，看分配的 IP
+ping 192.168.x.100            # 测试路由（~200ms 延迟正常）
+```
+
+### SSH 配置（~/.ssh/config）
+
+```
+Host pve-zt
+  HostName 192.168.x.100
+  User root
+  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
+  ConnectTimeout 15
+
+Host win-zt
+  HostName 192.168.x.109
+  User <user>
+  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
+  ConnectTimeout 15
+
+Host 192.168.x.100
+  User root
+  KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
+  ConnectTimeout 15
+```
+
+快速使用：`ssh pve-zt`、`ssh win-zt`
+
+### macOS SSH over ZT — 后量子 KEX 问题（关键踩坑）
+
+macOS OpenSSH 10.2+ 默认启用后量子密钥交换算法 `mlkem768x25519-sha256`，握手包约 1.5KB。过 ZT 隧道（延迟 200ms+、MTU 2800）时会分片丢失，导致 **SSH 在密钥交换阶段卡死**。
+
+**症状**: `nc -z` 端口可达，`ping` 正常，但 SSH 永远超时，verbose 输出卡在 `expecting SSH2_MSG_KEX_ECDH_REPLY`。
+
+**修复**: SSH config 中对 ZT 目标禁用 PQ 算法（见上方配置）。
+
+### Windows VM SSH — 管理员 authorized_keys 路径（关键踩坑）
+
+Windows OpenSSH 管理员组用户的 authorized_keys 路径**不是** `~/.ssh/authorized_keys`！
+`sshd_config` 中 `Match Group administrators` 规则将其覆盖为：
+```
+C:\ProgramData\ssh\administrators_authorized_keys
+```
+
+设置公钥：
+```powershell
+# 在 Windows VM 上执行
+Add-Content 'C:\ProgramData\ssh\administrators_authorized_keys' 'ssh-ed25519 AAAA... you@email.com'
+icacls 'C:\ProgramData\ssh\administrators_authorized_keys' /inheritance:r /grant SYSTEM:F /grant Administrators:F
+```
+
+### PVE 管理命令
+
+```bash
+# 查看所有 VM 状态
+ssh pve-zt "qm list"
+
+# 启动/关闭 VM
+ssh pve-zt "qm start 103"
+ssh pve-zt "qm shutdown 103"    # 正常关机
+ssh pve-zt "qm stop 103"        # 强制关机（危险！）
+
+# 查看 VM 详情
+ssh pve-zt "qm config 103"
+
+# 查找 VM IP（通过 ARP 表）
+ssh pve-zt "ip neigh | grep -i '<mac_addr>'"
+```
+
+### Windows VM 命令
+
+```bash
+# 免密执行
+ssh win-zt "hostname && whoami"
+
+# 需要密码时用 sshpass
+sshpass -p 'Zen7426@edge2' ssh -o StrictHostKeyChecking=no user@192.168.x.109 "command"
+
+# Ollama API（不需要 SSH）
+curl -s http://192.168.x.109:11434/api/tags | python3 -m json.tool
+curl -s http://192.168.x.109:11434/api/show -d '{"model": "model-name"}' | python3 -m json.tool
+curl -s http://192.168.x.109:11434/api/generate -d '{"model": "model-name", "prompt": "Hello", "stream": false}'
+```
+
+### ZT 排障速查
+
+1. `zerotier-cli status` → 确认 ONLINE
+2. `zerotier-cli listnetworks` → 确认网络 OK，看分配的 IP
+3. `ping 192.168.x.100` → 确认路由可达
+4. `nc -z -w5 192.168.x.100 22` → 确认端口 open
+5. SSH 卡在 `KEXINIT` / `KEX_ECDH_REPLY` → 后量子算法问题，加 `KexAlgorithms`
+6. SSH Permission denied 但密码正确 → 检查 authorized_keys 路径（Windows 管理员用 `ProgramData\ssh\`）
+7. ZT 重连后端口仍不通 → 先 `leave` 再 `join` 重新加入网络
+
+### HuggingFace 模型下载
+
+部分 HuggingFace 模型需要登录认证（401 错误）。需先在 HF 页面点 Agree 接受协议，然后配置 token：
+```bash
+# 在 Windows VM 上设置
+setx HF_TOKEN "hf_xxxxx"
+# 下载时加 header
+curl -L -H "Authorization: Bearer hf_xxxxx" -o model.gguf "https://huggingface.co/.../resolve/main/file.gguf"
+```
 
 ---
 
