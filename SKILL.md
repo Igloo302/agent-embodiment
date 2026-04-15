@@ -266,54 +266,27 @@ curl -s http://<endpoint>/api/generate \
 
 ---
 
-## Phase 3: Schema 合并
+## Phase 3: Schema 自动合并
 
-发现结果 + 已有配置 = 完整的 body-schema。
-
-### 合并流程
-
-```python
-# 伪代码，实际由 agent 执行
-1. 读取 body-schema.json → cached
-2. 运行 discover-self.sh → self_info
-3. 运行 discover-ollama.sh → ollama_info
-4. 运行 discover-network.sh → network_scan（可选，跨网段可能扫不到）
-5. 合并逻辑：
-   for device in cached.devices:
-       if device.discovered == true:
-           # 自动发现的设备：用新数据覆盖
-           update(device, new_data)
-       else:
-           # 手动配置的设备：保留，只更新 status
-           device.status = check_reachable(device.ip)
-   for new_device in discovered:
-       if new_device not in cached.devices:
-           # 新设备：新增
-           cached.devices.append(new_device)
-6. 更新 discovery_meta.last_full_discovery
-7. 写入 body-schema.json
-```
-
-### 跨网段处理
-
-本机可能在不同子网（如 10.x.x.x），设备在 192.168.x.x。ARP 扫描只能扫本机所在网段。
-
-解决方案：对已知网段逐一扫描（从 body-schema.json 的 environment.networks 读取），或直接用已配置的 IP 做连通性测试：
+运行 `merge-schema.py` 自动完成发现 → 合并 → 写入全流程：
 
 ```bash
-for ip in <pve-ip> <vm-ip>; do
-  if ping -c 1 -t 2 "$ip" >/dev/null 2>&1; then
-    echo "$ip alive"
-  fi
-done
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
+
+自动执行：
+1. 读取现有 body-schema.json
+2. 运行 discover-self.sh 获取本机信息
+3. 测试所有已知设备连通性
+4. 运行 discover-inference.sh 探测推理能力
+5. 按合并规则写回 body-schema.json
 
 ### 合并规则
 
 1. 自动发现的设备 → 新增或更新（标记 `discovered: true`）
-2. 手动配置的设备 → 保留不动（标记 `discovered: false`）
-3. 缓存中存在但本次未发现的设备 → 标记 `status: unreachable`，不删除
-4. 敏感信息（密码）→ 不写入 schema，引用 `.env`
+2. 手动配置的设备 → 保留不动，只更新 status
+3. 缓存中存在但本次未发现 → 标记 `status: unreachable`，不删除
+4. 敏感信息（密码）→ 不写入 schema
 
 ### body-schema.json 完整格式
 
@@ -461,12 +434,13 @@ done
 |------|------|------|
 | `discover-self.sh` | 本机信息采集 | <5秒 |
 | `discover-hardware.sh` | **本机硬件**（音频/蓝牙/显示器/摄像头/USB/打印机/存储） | <10秒 |
-| `discover-network.sh` | 局域网扫描（含 NAS 端口） | ~30秒 |
-| `discover-mdns.sh` | **mDNS/Bonjour 发现**（AirPlay/Chromecast/SMB/HomeKit/打印机） | ~30秒 |
-| `discover-nas.sh` | NAS/家庭服务专项探测 | ~60秒 |
+| `discover-network.sh` | **网络发现统一入口**（编排存活探测 + mDNS + NAS） | ~60秒 |
+| `discover-mdns.sh` | mDNS/Bonjour 服务发现 | ~30秒 |
+| `discover-nas.sh` | NAS/服务端口探测 | ~30秒 |
 | `discover-pve.sh` | PVE VM 列表 | ~5秒 |
 | `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
 | `discover-inference.sh` | **推理能力探测**（GPU/VRAM/后端/模型） | ~10秒 |
+| `merge-schema.py` | **Phase 3 自动合并**（运行所有脚本 + 写入 schema） | ~90秒 |
 
 手动运行全部发现：
 
