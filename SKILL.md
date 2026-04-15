@@ -3,7 +3,7 @@ name: agent-embodiment
 description: |
   让 Agent 理解自己的「身体」和所处的物理世界——我是谁、我在哪、我能控制什么、我的边界。
   自动发现运行环境、扫描网络设备、维护持久化的本体 Schema、安全分级执行操作。
-  触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态、开关机、启动/关闭VM、查看虚拟机状态、SSH连接、Ollama。
+  触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态、开关机、启动/关闭VM、查看虚拟机状态、SSH连接、Ollama、本地模型、GPU状态、VRAM、推理能力、模型部署、算力。
   也适用于：用户问「你跑在什么上面」「你能控制哪些设备」「看看我的网络环境」。
 ---
 
@@ -189,6 +189,53 @@ ssh <user>@<vm_ip> "sw_vers; sysctl -n machdep.cpu.brand_string; system_profiler
 ```bash
 curl -s -o /dev/null -w "%{http_code}" http://<router_ip>   # 简单探测
 nmap -sV -p 80,443,8080 <router_ip>                          # 端口扫描
+```
+
+### 本地推理能力（重点关注）
+
+本地模型部署是核心能力。探测每个设备的推理潜力：
+
+```bash
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
+```
+
+探测内容：
+1. **GPU** — NVIDIA CUDA / Apple Metal / AMD ROCm，型号、显存总量/已用/空闲
+2. **推理后端** — Ollama / vLLM / llama.cpp / LM Studio，自动发现运行中的实例
+3. **模型清单** — 每个模型的参数量、量化方式、大小、是否已加载
+4. **容量评估** — 根据可用 VRAM 估算能跑多大的模型
+
+输出示例：
+
+```
+--- 本机 GPU ---
+backend: CUDA (nvidia-smi)
+  GPU 0: NVIDIA GeForce RTX 5070 | 12288MB total, 8192MB free | 15% util | 42°C
+
+--- 推理后端 ---
+ollama: running (localhost:11434)
+  models: 2
+vllm: running (localhost:8000)
+
+--- 推理容量评估 ---
+  可用 VRAM: 8.0GB → 约可运行 7B-13B (Q4)
+  当前已加载模型: 1 个
+```
+
+**推理能力速查卡**：
+
+```bash
+# Ollama
+curl -s http://<endpoint>/api/tags | python3 -m json.tool    # 模型列表
+curl -s http://<endpoint>/api/ps | python3 -m json.tool      # 已加载模型
+
+# GPU
+nvidia-smi                                                    # NVIDIA 显卡状态
+system_profiler SPDisplaysDataType                            # macOS Metal
+
+# 快速测试推理（验证端点可用）
+curl -s http://<endpoint>/api/generate \
+  -d '{"model":"<model-name>","prompt":"hi","stream":false}' | head -c 200
 ```
 
 ---
@@ -416,6 +463,7 @@ done
 | `discover-network.sh` | 局域网扫描 | ~30秒 |
 | `discover-pve.sh` | PVE VM 列表 | ~5秒 |
 | `discover-ollama.sh` | Ollama 模型探测 | ~3秒 |
+| `discover-inference.sh` | **推理能力探测**（GPU/VRAM/后端/模型） | ~10秒 |
 
 手动运行全部发现：
 
@@ -466,6 +514,21 @@ done
 可逆性：否（重启无法撤回，但可以重新启动）
 确认执行？[是/否]
 ```
+
+### 用户问「我有什么算力？」
+
+→ 运行 discover-inference.sh，汇报：
+「你有一张 RTX 5070 (12GB VRAM)，当前空闲 8GB，能跑 7B-13B 量化的模型。Ollama 已加载 2 个模型。」
+
+### 用户问「能跑什么模型？」
+
+→ 查 body-schema.json 的 inference 信息：
+「根据当前 VRAM，可以流畅跑 7B-13B Q4 量化模型。推荐：Qwen2.5-7B、Llama3-8B。如果用 CPU 推理，7B 约 8-12 tok/s。」
+
+### 用户说「看看 Ollama 状态」
+
+→ 运行 discover-inference.sh 或直接 curl Ollama API：
+「Ollama 运行中，3 个模型已安装（model-name、model-name、model-name），当前 gemma4 已加载，VRAM 占用 5.2GB。」
 
 ---
 
