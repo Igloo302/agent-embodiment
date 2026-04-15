@@ -7,9 +7,9 @@
 #
 # 示例：
 #   verify-action.sh vm-running pve 103
-#   verify-action.sh service-up http://192.168.x.109:11434/api/tags
-#   verify-action.sh ssh-reachable 192.168.x.100
-#   verify-action.sh ollama-model http://192.168.x.109:11434 model-name
+#   verify-action.sh service-up http://<server-ip>:11434/api/tags
+#   verify-action.sh ssh-reachable <server-ip>
+#   verify-action.sh ollama-model http://<server-ip>:11434 <model-name>
 #   verify-action.sh disk-space / 90
 #   verify-action.sh process-running ollama
 
@@ -123,7 +123,7 @@ case "$ACTION" in
 
   # --- 服务状态 ---
   service-up)
-    # TARGET = URL (如 http://192.168.x.109:11434/api/tags)
+    # TARGET = URL (如 http://<server-ip>:11434/api/tags)
     http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time "$TIMEOUT" "$TARGET" 2>/dev/null || echo "000")
     if [[ "$http_code" =~ ^2[0-9]{2}$ ]]; then
       verify pass "Service responding (HTTP $http_code)"
@@ -134,7 +134,7 @@ case "$ACTION" in
 
   # --- Ollama ---
   ollama-up)
-    # TARGET = base URL (如 http://192.168.x.109:11434)
+    # TARGET = base URL (如 http://<server-ip>:11434)
     http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$TARGET/api/tags" 2>/dev/null || echo "000")
     if [[ "$http_code" == "200" ]]; then
       verify pass "Ollama is running"

@@ -10,3 +10,4 @@ timestamp	commit	skill	old_score	new_score	status	dimension	note	eval_mode
 2026-04-15T16:00	d0bd76e	agent-embodiment	75	77	keep	架构+工作流	Phase 8→4 合并，发现+探测+确认统一	dry_run	dry_run
 2026-04-15T16:05	3f05e93	agent-embodiment	77	80	keep	边界+指令+实测	异常处理表+使用场景精确流程映射	dry_run	dry_run
 2026-04-15T16:10	current	agent-embodiment	80	84	keep	实测	子agent 对比测试：3次API/35秒 vs 15次/99秒，5x效率提升	full_test	full_test
+2026-04-15T16:15	3243b18	agent-embodiment	84	85	keep	工作流+指令	并行执行说明+定向发现具体映射	dry_run	dry_run
