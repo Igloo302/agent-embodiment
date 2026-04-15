@@ -6,7 +6,9 @@
 
 AI Agent 能对话、能写代码、能搜索，但它**不知道自己跑在什么机器上、局域网里有什么设备、能不能控制那台服务器**。
 
-Agent Embodiment 解决这个问题。它是一个 [Hermes Agent](https://github.com/anthropics/hermes-agent) Skill，让 Agent 自动发现运行环境、扫描网络设备、维护一份「身体 Schema」，并安全地操作可控设备。
+Agent Embodiment 解决这个问题。它为 AI Agent 提供**本体感知**（proprioception）能力——自动发现运行环境、扫描网络设备、维护一份「身体 Schema」，并安全地操作可控设备。
+
+**适用于任何能执行 shell 命令的 Agent**：Hermes Agent、Claude Code、OpenClaw、Cursor、Codex CLI 等。
 
 ## 效果
 
@@ -31,17 +33,31 @@ Agent：跑在 MacBook Pro 上，macOS 26.3，Apple M1，16GB 内存。
 - **Schema 驱动** — 所有设备信息存在 `body-schema.json`，Agent 自行决定怎么做
 - **安全操作** — 4 级安全分级（🟢只读→🔴高风险），中高风险操作必须确认
 - **验证闭环** — 操作后自动验证结果，失败有回退方案
-- **通用** — 适用于 Mac、Linux、Docker、NAS、HomeLab，不绑定任何特定场景
+- **通用** — Mac、Linux、Docker、NAS、HomeLab，不绑定任何平台
 
 ## 安装
+
+### Hermes Agent
 
 ```bash
 hermes skills install <your-username>/agent-embodiment
 ```
 
-首次使用，生成初始 Schema：
+### Claude Code / 其他 Agent
 
 ```bash
+git clone https://github.com/<your-username>/agent-embodiment.git ~/agent-embodiment
+```
+
+将 `SKILL.md` 的内容加入你的 Agent 系统 prompt，或放在 Agent 能读取的 skill 目录中。
+
+### 初始化
+
+首次使用生成初始 Schema：
+
+```bash
+python3 ~/agent-embodiment/scripts/merge-schema.py
+# 或
 python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
 
@@ -99,11 +115,21 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 支持的设备类型：`hypervisor` · `vm` · `docker_host` · `inference_server` · `nas` · `smart_home`
 
+## 平台适配
+
+| Agent 平台 | 安装方式 | 持久化方式 |
+|-----------|---------|-----------|
+| Hermes Agent | `hermes skills install` | memory 工具自动写入 |
+| Claude Code | clone + 系统 prompt | CLAUDE.md 或项目文件 |
+| OpenClaw | clone 到 skills 目录 | 内置记忆机制 |
+| 其他 | 将 SKILL.md 加入上下文 | 写入本地文件或 .md |
+
+SKILL.md 的 Phase 0-3（发现、Schema、安全操作）对所有平台通用。Phase 4（持久化）根据各平台能力适配。
+
 ## 依赖
 
 - Bash + Python 3.6+
-- `curl` · `ping` · `jq`
-- [Hermes Agent](https://github.com/anthropics/hermes-agent)
+- `curl` · `ping` · `jq`（通常已预装）
 
 ## License
 

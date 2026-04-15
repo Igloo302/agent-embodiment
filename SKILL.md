@@ -2,6 +2,7 @@
 name: agent-embodiment
 description: |
   让 Agent 理解自己的「身体」和所处的物理世界——我是谁、我在哪、我能控制什么、我的边界。
+  适用于任何能执行 shell 命令的 Agent（Hermes Agent、Claude Code、OpenClaw、Cursor、Codex CLI 等）。
   自动发现运行环境、扫描网络设备、维护持久化的本体 Schema、安全分级执行操作。
   触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态、开关机、启动/关闭VM、查看虚拟机状态、SSH连接、Ollama、本地模型、GPU状态、VRAM、推理能力、模型部署、算力。
   也适用于：用户问「你跑在什么上面」「你能控制哪些设备」「看看我的网络环境」。
@@ -23,8 +24,9 @@ Agent 也需要类似的能力：
 - **我能动什么** — 可控设备清单和能力边界
 - **什么不能碰** — 安全红线和分级确认
 
-这不是任何特定场景的管理工具。这是 Agent 的**身体 Schema**。
-适用于 Mac、Linux、Docker 容器、NAS、甚至嵌入式设备。
+这不是任何特定平台的管理工具。这是 Agent 的**身体 Schema**。
+适用于任何能执行 shell 命令的 Agent——Hermes Agent、Claude Code、OpenClaw、Cursor、Codex CLI。
+运行在 Mac、Linux、Docker 容器、NAS、甚至嵌入式设备上。
 
 ---
 
