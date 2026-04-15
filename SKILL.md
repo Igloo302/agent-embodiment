@@ -304,17 +304,25 @@ json.dump(s, open(p, 'w'), indent=2)
 
 ---
 
-## 使用场景
+## 使用场景速查
 
-**「你跑在什么上面？」** → 读 schema 的 `self` 字段回答。
+**「你跑在什么上面？」**
+→ Phase 0 (快速读取) → 读 schema `self` 字段
 
-**「你能控制什么？」** → 读 `devices` 列表 + `capabilities`。
+**「你能控制什么？」**
+→ Phase 0 (快速读取) → 读 `devices` + `capabilities`
 
-**「看看网络里有什么」** → 跑 `discover-network.sh`。
+**「看看网络里有什么」**
+→ Phase 0 (定向发现) → Phase 1.2 `discover-network.sh` → Phase 2 合并
 
-**「我有什么算力？」** → 跑 `discover-inference.sh`，汇报 GPU/VRAM/模型/容量。
+**「我有什么算力？」**
+→ Phase 0 (定向发现) → Phase 1.3 `discover-inference.sh` → 汇报 GPU/VRAM/模型
 
-**「帮我重启 XX」** → 查 safety_level + 操作分级 → 确认 → 执行 → `verify-action.sh` 验证。
+**「帮我重启 XX」**
+→ Phase 0 → 查 `safety_level` → Phase 3 确认 → 执行 → Phase 3 验证
+
+**「刷新一下设备信息」**
+→ Phase 0 (完整发现) → Phase 1 全流程 → Phase 1.6 确认 → Phase 2 合并 → Phase 4 持久化
 
 ---
 
@@ -339,8 +347,18 @@ json.dump(s, open(p, 'w'), indent=2)
 3. Schema 可能过时 — DHCP 下 IP 会变，需定期刷新
 4. 安全分级是参考 — 最终判断权在用户
 
+### 常见异常
+
+| 异常 | 处理 |
+|------|------|
+| SSH 权限不足 (Permission denied) | 标记该设备 `status: auth_required`，跳过，建议用户配置 key |
+| 所有设备 unreachable | 检查本机网络连通性，建议刷新 schema，不删除旧数据 |
+| 脚本无执行权限 | `chmod +x scripts/*.sh` 后重试 |
+| JSON 解析失败 | 删除损坏 schema，重新完整发现 |
+| 发现脚本超时 | 单设备超时跳过，不阻塞整体流程 |
+
 ---
 
 **维护者**: 劲阳
 **最后更新**: 2026-04-15
-**版本**: 3.2 (Phase 8→4 合并，发现+探测+确认统一为 Phase 1)
+**版本**: 3.3 (异常处理表 + 使用场景精确流程映射)
