@@ -34,70 +34,35 @@ Agent 也需要类似的能力：
 
 **触发条件**：`body-schema.json` 不存在 = 用户第一次使用。
 
-按以下流程引导用户完成初始化。**每一步都等用户确认后再继续**。
+### 流程（两步完成）
 
-### Step 1: 自我介绍
+**Step 1: 介绍 + 等待确认**
 
 ```
 👋 你好！我是 Agent Embodiment —— 你的「身体感」模块。
-
-简单说：大多数 AI 不知道自己跑在哪台机器上、网络里有什么、能控制什么。
-我帮你解决这个问题。
 
 我能做什么：
   🔍 自动发现你的运行环境和网络设备
   📋 维护一份「身体 Schema」—— 记录所有可控设备
   🔒 安全地帮你操作设备（有确认 + 验证）
 
-整个初始化大概需要 30 秒，我带你走一遍？
+说「开始」我就自动完成初始化（约 30 秒）。
 ```
 
 等用户回复「好」「继续」「开始」再进入 Step 2。
 
-### Step 2: 快速自检
+**Step 2: 一键初始化**
 
-跑本机发现，让用户看到即时效果：
+用户确认后，**按顺序自动执行全部步骤**，中间不需要用户干预：
 
 ```bash
+# 1. 本机发现
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
-```
 
-汇报：
-
-```
-📡 我的「身体」：
-  - 主机：{hostname}
-  - 系统：{os} {arch}
-  - CPU：{cpu}
-  - 内存：{memory_gb}GB
-  - IP：{ips}
-
-接下来要不要扫描一下网络？看看局域网里有什么设备。
-```
-
-等用户确认再进入 Step 3。
-
-### Step 3: 网络发现（可选）
-
-用户说「好」或「扫描」时运行：
-
-```bash
+# 2. 网络扫描
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
-```
 
-汇报发现结果：
-
-```
-📡 网络里发现了 {N} 台设备：
-  - {设备列表}
-
-有没有你知道但我没扫到的设备？比如 NAS、树莓派之类的？
-可以手动补充，也可以先跳过以后再加。
-```
-
-### Step 4: 生成 Schema
-
-```bash
+# 3. 生成 Schema（会自动调用上面两个脚本 + 合并结果）
 python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```
 
@@ -105,6 +70,11 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ```
 ✅ 初始化完成！
+
+📡 我的「身体」：
+  - 主机：{hostname} ({os} {arch})
+  - 网络设备：{N} 台
+  - 推理能力：{摘要}
 
 我的「身体档案」已保存：~/.hermes/skills/agent-embodiment/body-schema.json
 
@@ -437,6 +407,14 @@ json.dump(s, open(p, 'w'), indent=2)
 | 脚本无执行权限 | `chmod +x scripts/*.sh` 后重试 |
 | JSON 解析失败 | 删除损坏 schema，重新完整发现 |
 | 发现脚本超时 | 单设备超时跳过，不阻塞整体流程 |
+| 网络扫描结果不一致 | `discover-network.sh` 每次运行可能发现不同设备（ARP/mDNS 时序差异）。merge-schema.py 已处理：旧缓存 + 新扫描结果合并，累积发现不丢设备 |
+
+### merge-schema.py 设计要点
+
+- **缓存机制**：`run_script()` 自动将 stdout 缓存到 `.cache/<script>.stdout`
+- **网络发现累积**：`discover_network_devices()` 先读旧缓存，再跑新扫描，两者合并（IP 去重，端口/服务追加）
+- **本机跳过**：用 `ifconfig` 获取本机 IP，自动过滤
+- **设备类型猜测**：`guess_device_type()` 按端口优先级推断（PVE > NAS > Ollama > LM-Studio > llama.cpp > ...）
 
 ---
 

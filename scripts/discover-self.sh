@@ -55,7 +55,10 @@ else
   echo "  \"gpu\": \"${gpu}\","
 fi
 
-***REMOVED***
+# Local subnet (for network scanning)
+primary_ip=$(ipconfig getifaddr en0 2>/dev/null || ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | cut -d/ -f1 || echo "unknown")
+subnet=$(echo "$primary_ip" | cut -d. -f1-3)
+echo "  \"local_subnet\": \"${subnet}.0/24\","
 ips=$(ifconfig 2>/dev/null | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}' | paste -sd "," - || echo "unknown")
 echo "  \"ip\": [$(echo "$ips" | sed 's/,/\", \"/g; s/^/\"/; s/$/\"/')],"
 

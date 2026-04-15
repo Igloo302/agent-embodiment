@@ -82,19 +82,36 @@ printf "%-16s %-8s %-18s %s\n" "IP" "Port" "Service" "Status"
 printf "%-16s %-8s %-18s %s\n" "----" "----" "-------" "------"
 
 found=0
+tmpfile=$(mktemp)
+trap "rm -f '$tmpfile'" EXIT
+
+# 并行端口扫描：所有 (ip, port) 组合同步并发
+scan_port() {
+  local ip="$1" port="$2"
+  if nc -z -w 1 -G 1 "$ip" "$port" 2>/dev/null; then
+    svc=$(port_name "$port")
+    echo "$ip|$port|$svc" >> "$tmpfile"
+  fi
+}
+
 for ip in "${ips[@]}"; do
   [[ -z "$ip" ]] && continue
   if ! ping -c 1 -t 1 "$ip" >/dev/null 2>&1; then
     continue
   fi
   for port in $PORTS; do
-    if nc -z -w 1 -G 1 "$ip" "$port" 2>/dev/null; then
-      svc=$(port_name "$port")
-      printf "%-16s %-8s %-18s %s\n" "$ip" "$port" "$svc" "open"
-      found=$((found + 1))
-    fi
+    scan_port "$ip" "$port" &
   done
 done
+wait
+
+# 按 IP 排序输出
+if [[ -s "$tmpfile" ]]; then
+  sort -t'|' -k1,1V -k2,2n "$tmpfile" | while IFS='|' read -r ip port svc; do
+    printf "%-16s %-8s %-18s %s\n" "$ip" "$port" "$svc" "open"
+  done
+  found=$(wc -l < "$tmpfile" | tr -d ' ')
+fi
 echo "  ($found 个服务端口)"
 echo ""
 
@@ -102,7 +119,11 @@ echo ""
 # Step 3: mDNS 发现（调用 discover-mdns.sh）
 # ---------------------------------------------------------------
 if [[ -x "$SCRIPTS/discover-mdns.sh" ]]; then
-  bash "$SCRIPTS/discover-mdns.sh" 2>&1 | grep -E "^  📡|^---" || true
+  # macOS 没有 timeout 命令，用后台进程 + sleep + kill
+  bash "$SCRIPTS/discover-mdns.sh" 2>&1 | grep -E "^  📡|^---" &
+  mdns_pid=$!
+  ( sleep 5 && kill "$mdns_pid" 2>/dev/null ) &
+  wait "$mdns_pid" 2>/dev/null || true
 fi
 
 echo ""
