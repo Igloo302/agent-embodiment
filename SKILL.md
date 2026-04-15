@@ -411,13 +411,31 @@ json.dump(s, open(p, 'w'), indent=2)
 
 ### merge-schema.py 设计要点
 
-- **缓存机制**：`run_script()` 自动将 stdout 缓存到 `.cache/<script>.stdout`
-- **网络发现累积**：`discover_network_devices()` 先读旧缓存，再跑新扫描，两者合并（IP 去重，端口/服务追加）
-- **本机跳过**：用 `ifconfig` 获取本机 IP，自动过滤
-- **设备类型猜测**：`guess_device_type()` 按端口优先级推断（PVE > NAS > Ollama > LM-Studio > llama.cpp > ...）
+- **统一缓存**：`run_script()` 运行脚本后自动将 stdout 存入 `.cache/<script>.stdout`。`read_cached()` 读取缓存。所有脚本共享同一套缓存机制
+- **网络发现累积**：`discover_network_devices()` 先读旧缓存，再跑新扫描，两者合并（IP 去重，端口/服务追加）。解决 `discover-network.sh` 每次扫描结果不一致的问题
+- **本机跳过**：`get_local_ips()` 用 `ifconfig` 获取本机 IP，自动过滤
+- **设备类型猜测**：`guess_device_type(ip, info)` 按端口优先级推断（PVE > NAS > Ollama > LM-Studio > llama.cpp > HTTP > SSH > SMB > DNS > unknown）
+- **输出解析**：`parse_network_output(output)` 纯函数，将脚本文本输出转为 `{ip: {ports, services}}` dict
+
+### merge-schema.py 函数清单
+
+| 函数 | 职责 |
+|------|------|
+| `run_script(name, timeout)` | 运行脚本 + 缓存 stdout |
+| `read_cached(script_name)` | 读缓存，无缓存返回空串 |
+| `load_schema()` | 读 body-schema.json，不存在返回空模板 |
+| `discover_self()` | 读缓存的本机信息 JSON |
+| `test_reachability(ips)` | ping 测试 IP 连通性 |
+| `detect_inference_backends()` | 探测 Ollama/vLLM/LM Studio |
+| `parse_network_output(output)` | 解析网络扫描文本 → dict |
+| `get_local_ips()` | 获取本机所有 IP |
+| `guess_device_type(ip, info)` | 端口 → 设备类型推断 |
+| `discover_network_devices()` | 旧缓存 + 新扫描 → 累积合并设备列表 |
+| `merge_schema(...)` | 合并 self + 设备 + 推理后端 → schema |
+| `main()` | 6 步流程编排 |
 
 ---
 
 **维护者**: 劲阳
 **最后更新**: 2026-04-15
-**版本**: 3.5 (首次运行引导 + 入口路由)
+**版本**: 3.6 (缓存机制重构 + 设备累积发现)
