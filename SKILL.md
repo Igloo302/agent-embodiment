@@ -40,20 +40,15 @@ Agent 也需要类似的能力：
 
 ### 网络前置
 
-执行发现前确认网络连通。本环境涉及两个网段：
-
-- **局域网**: 192.168.x.0/24（本机通过 ZeroTier 中转可达）
-- **ZT 网络**: 192.168.x.0/24（Hermes 本机 ZT IP: 192.168.x.x）
-- **ZT → PVE**: 经 192.168.x.x 中转到 192.168.x.0/24
-- **ZT → Windows VM**: 直连（无跳板）
+执行发现前确认网络连通。如果使用 ZeroTier 等 VPN，注意跨网段路由。
 
 连通性速检：
 
 ```bash
 zerotier-cli status          # 确认 ZT 在线 (ONLINE)
 zerotier-cli listnetworks    # 确认网络 OK，看分配的 IP
-ping -c 1 192.168.x.100      # 测试 PVE 路由（~200ms 延迟正常）
-ping -c 1 192.168.x.109      # 测试 Windows VM
+ping -c 1 <pve-ip>           # 测试 PVE 路由（ZT 延迟 ~200ms 正常）
+ping -c 1 <vm-ip>            # 测试目标 VM
 ```
 
 ### SSH 配置
@@ -61,15 +56,15 @@ ping -c 1 192.168.x.109      # 测试 Windows VM
 所有远程设备通过 SSH Host 别名连接。`~/.ssh/config` 示例：
 
 ```
-Host pve-zt
+Host pve-alias
   HostName 192.168.x.100
   User root
   KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
   ConnectTimeout 15
 
-Host win-zt
+Host vm-alias
   HostName 192.168.x.109
-  User <user>
+  User your-username
   KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256
   ConnectTimeout 15
 ```
@@ -93,14 +88,14 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
 输出示例：
 
 ```
-hostname: my-macbook
-os: macOS 15.4.1
+hostname: your-hostname
+os: macOS 15.x
 arch: arm64
 cpu: Apple M4 Pro (12核)
 memory_gb: 16
-hermes_version: v2026.4.13
-hermes_path: /Users/user/.hermes/hermes-agent
-ips: 10.x.x.x, 192.168.x.x
+hermes_version: v2026.x.x
+hermes_path: /Users/your-username/.hermes/hermes-agent
+ips: 192.168.x.x, 10.x.x.x
 python: 3.13
 docker: installed
 node: v22.x
@@ -123,7 +118,7 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 ```
 192.168.x.1    alive  ports=80,443        type=router
 192.168.x.100  alive  ports=22,8006       type=pve
-192.168.x.109  alive  ports=11434         type=windows_vm
+192.168.x.109  alive  ports=11434         type=vm
 ```
 
 ### Step 3: 生成/更新 Schema
@@ -141,20 +136,20 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 **探测**：
 
 ```bash
-ssh pve-zt "qm list"                                    # 列出 VM 状态
-ssh pve-zt "pvesh get /cluster/resources --type vm --output-format json"  # 详细资源
+ssh <pve-alias> "qm list"                                    # 列出 VM 状态
+ssh <pve-alias> "pvesh get /cluster/resources --type vm --output-format json"  # 详细资源
 ```
 
 **操作速查**：
 
 ```bash
 # VM 生命周期
-ssh pve-zt "qm list"                   # 查看所有 VM 状态
-ssh pve-zt "qm start 103"              # 启动 VM
-ssh pve-zt "qm shutdown 103"           # 正常关机
-ssh pve-zt "qm stop 103"               # 强制关机（危险！）
-ssh pve-zt "qm config 103"             # 查看 VM 详情
-ssh pve-zt "ip neigh | grep -i '<mac>'"  # 查找 VM IP（ARP 表）
+ssh <pve-alias> "qm list"                   # 查看所有 VM 状态
+ssh <pve-alias> "qm start <vmid>"           # 启动 VM
+ssh <pve-alias> "qm shutdown <vmid>"        # 正常关机
+ssh <pve-alias> "qm stop <vmid>"            # 强制关机（危险！）
+ssh <pve-alias> "qm config <vmid>"          # 查看 VM 详情
+ssh <pve-alias> "ip neigh | grep -i '<mac>'"  # 查找 VM IP（ARP 表）
 ```
 
 提取：VMID、名称、状态（running/stopped）、CPU/内存分配、磁盘大小。
@@ -164,23 +159,23 @@ ssh pve-zt "ip neigh | grep -i '<mac>'"  # 查找 VM IP（ARP 表）
 **探测**：
 
 ```bash
-curl -s http://192.168.x.109:11434/api/tags    # Ollama 模型列表（无需 SSH）
-ssh win-zt "hostname && whoami"                  # SSH 测试（可能不稳定）
+curl -s http://<vm-ip>:11434/api/tags    # Ollama 模型列表（无需 SSH）
+ssh vm-alias "hostname && whoami"                  # SSH 测试（可能不稳定）
 ```
 
 **操作速查**：
 
 ```bash
 # SSH 免密执行
-ssh win-zt "hostname && whoami"
+ssh vm-alias "hostname && whoami"
 
-# 需要密码时用 sshpass
-sshpass -p "$WIN_VM_PASSWORD" ssh -o StrictHostKeyChecking=no user@192.168.x.109 "command"
+# 需要密码时（密码通过环境变量传入，不要写死）
+sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no user@<vm-ip> "command"
 
 # Ollama API（推荐，无需 SSH）
-curl -s http://192.168.x.109:11434/api/tags | python3 -m json.tool
-curl -s http://192.168.x.109:11434/api/show -d '{"model": "model-name"}' | python3 -m json.tool
-curl -s http://192.168.x.109:11434/api/generate -d '{"model": "model-name", "prompt": "Hello", "stream": false}'
+curl -s http://<vm-ip>:11434/api/tags | python3 -m json.tool
+curl -s http://<vm-ip>:11434/api/show -d '{"model": "model-name"}' | python3 -m json.tool
+curl -s http://<vm-ip>:11434/api/generate -d '{"model": "model-name", "prompt": "Hello", "stream": false}'
 ```
 
 ### macOS VM
@@ -259,7 +254,7 @@ nmap -sV -p 80,443,8080 <router_ip>                          # 端口扫描
 解决方案：对已知网段逐一扫描（从 body-schema.json 的 environment.networks 读取），或直接用已配置的 IP 做连通性测试：
 
 ```bash
-for ip in 192.168.x.100 192.168.x.109; do
+for ip in <pve-ip> <vm-ip>; do
   if ping -c 1 -t 2 "$ip" >/dev/null 2>&1; then
     echo "$ip alive"
   fi
@@ -278,19 +273,19 @@ done
 ```json
 {
   "self": {
-    "hostname": "my-macbook",
-    "os": "macOS 15.4.1",
+    "hostname": "your-hostname",
+    "os": "macOS 15.x",
     "arch": "arm64",
     "cpu": "Apple M4 Pro",
     "memory_gb": 16,
-    "hermes_version": "v2026.4.13",
-    "hermes_path": "/Users/user/.hermes/hermes-agent",
-    "ip": ["10.x.x.x", "192.168.x.x"],
-    "discovered_at": "2026-04-14T11:00:00+08:00"
+    "hermes_version": "v2026.x.x",
+    "hermes_path": "/Users/your-username/.hermes/hermes-agent",
+    "ip": ["192.168.x.x", "10.x.x.x"],
+    "discovered_at": "2026-01-01T00:00:00+08:00"
   },
   "environment": {
     "timezone": "Asia/Shanghai",
-    "networks": ["192.168.x.0/24", "192.168.x.0/24"],
+    "networks": ["192.168.x.0/24"],
     "gateway": "192.168.x.1"
   },
   "devices": [
@@ -300,43 +295,42 @@ done
       "name": "Proxmox VE",
       "ip": "192.168.x.100",
       "os": "Proxmox VE 8.x",
-      "access": "ssh:pve-zt",
+      "access": "ssh:<pve-alias>",
       "capabilities": ["vm_lifecycle", "vm_console", "storage", "network"],
       "safety_level": "high",
       "vms": [
-        {"vmid": 101, "name": "macOS", "status": "running"},
-        {"vmid": 103, "name": "Windows", "status": "running"}
+        {"vmid": 101, "name": "VM-1", "status": "running"}
       ],
       "discovered": true,
       "status": "reachable",
-      "notes": "ZT 中转可达，SSH config 别名 pve-zt"
+      "notes": "填写你的 PVE 实际信息"
     },
     {
-      "id": "win-vm",
+      "id": "vm-example",
       "type": "vm",
-      "name": "Windows VM",
+      "name": "Example VM",
       "ip": "192.168.x.109",
       "os": "Windows 11",
       "host": "pve",
       "vmid": 103,
       "access": {
-        "ssh": {"available": false, "reason": "key exchange reset"},
+        "ssh": {"available": true, "command": "ssh <vm-alias>"},
         "ollama_api": {"available": true, "url": "http://192.168.x.109:11434"}
       },
       "capabilities": ["ollama_inference", "powershell"],
       "safety_level": "medium",
-      "gpu": "RTX 5070 12GB",
-      "ollama_models": ["model-name", "model-name"],
+      "gpu": "your-gpu-model",
+      "ollama_models": ["model-name:size"],
       "discovered": true,
       "status": "reachable",
-      "notes": "SSH 不稳定，Ollama API 可直连"
+      "notes": "填写你的 VM 实际信息"
     }
   ],
   "services": [
     {
       "id": "hermes-dashboard",
       "name": "Hermes Dashboard",
-      "url": "http://10.x.x.x:9119",
+      "url": "http://192.168.x.x:9119",
       "capabilities": ["config_management", "session_view"],
       "safety_level": "low"
     },
@@ -349,8 +343,7 @@ done
     }
   ],
   "discovery_meta": {
-    "last_full_discovery": "2026-04-14T11:00:00+08:00",
-    "last_incremental": "2026-04-14T11:30:00+08:00",
+    "last_full_discovery": "2026-01-01T00:00:00+08:00",
     "schema_version": "1.1"
   }
 }
@@ -401,10 +394,10 @@ done
 发现完成后，把关键信息写入 agent 持久记忆：
 
 ```
-**Agent 本体**: 跑在 macOS M4 Pro 上，Hermes v2026.4.13
-**可控设备**: PVE (192.168.x.100)、Windows VM (192.168.x.109, RTX 5070)、Hermes Dashboard
-**已知限制**: Windows VM SSH 不稳定，用 Ollama API 替代
-**最后发现**: 2026-04-14
+**Agent 本体**: 跑在 <hostname> 上，Hermes v2026.x.x
+**可控设备**: PVE (<pve-ip>)、VM (<vm-ip>)、Hermes Dashboard
+**已知限制**: <你的已知限制>
+**最后发现**: <日期>
 ```
 
 ### Schema 文件
@@ -467,9 +460,9 @@ done
 → 查 safety_level=high（PVE 操作）+ 操作分级=中风险
 → 使用中风险确认模板：
 ```
-⚠️ 准备执行：重启 Windows VM (VMID 103)
-设备：PVE (192.168.x.100)
-影响：Windows VM 将重启，Ollama 推理中断，约 2 分钟恢复
+⚠️ 准备执行：重启 VM (VMID <vmid>)
+设备：PVE (<pve-ip>)
+影响：<VM 名> 将重启，服务中断，约 2 分钟恢复
 可逆性：否（重启无法撤回，但可以重新启动）
 确认执行？[是/否]
 ```
@@ -521,8 +514,8 @@ done
 
 1. `zerotier-cli status` → 确认 ONLINE
 2. `zerotier-cli listnetworks` → 确认网络 OK，看分配的 IP
-3. `ping 192.168.x.100` → 确认路由可达
-4. `nc -z -w5 192.168.x.100 22` → 确认端口 open
+3. `ping <pve-ip>` → 确认路由可达
+4. `nc -z -w5 <pve-ip> 22` → 确认端口 open
 5. ZT 重连后端口仍不通 → 先 `leave` 再 `join` 重新加入网络
 
 ### SSH

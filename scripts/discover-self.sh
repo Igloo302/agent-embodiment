@@ -60,7 +60,8 @@ ips=$(ifconfig 2>/dev/null | grep "inet " | grep -v "127.0.0.1" | awk '{print $2
 echo "  \"ip\": [$(echo "$ips" | sed 's/,/\", \"/g; s/^/\"/; s/$/\"/')],"
 
 # Hermes version
-hermes_ver=$(/Users/user/.hermes/hermes-agent/venv/bin/hermes --version 2>/dev/null | head -1 || echo "unknown")
+hermes_cmd=$(command -v hermes 2>/dev/null || echo "$HOME/.hermes/hermes-agent/venv/bin/hermes")
+hermes_ver=$("$hermes_cmd" --version 2>/dev/null | head -1 || echo "unknown")
 echo "  \"hermes_version\": \"${hermes_ver}\","
 
 # Python

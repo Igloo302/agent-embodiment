@@ -35,16 +35,17 @@ echo "status: reachable (port 8006 open)"
 
 # 尝试 SSH 获取 VM 列表（快速超时）
 if command -v sshpass &>/dev/null; then
-  # 从 .env 读取密码
-  ENV_FILE="$HOME/.hermes/skills/agent-embodiment/.env"
-  [[ ! -f "$ENV_FILE" ]] && ENV_FILE="$HOME/.hermes/skills/openclaw-imports/homelab-control/.env"
+  # 从 .env 读取密码（环境变量名见 .env 文件）
+  ENV_FILE="$HOME/.hermes/.env"
   
   if [[ -f "$ENV_FILE" ]]; then
-    source "$ENV_FILE" 2>/dev/null
-    if [[ -n "${PVE_PASSWORD:-}" ]]; then
+    # 按行读取 PVE 相关密码变量
+    PVE_PASS=$(grep -E '^PVE_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"'"'" 2>/dev/null || true)
+    
+    if [[ -n "${PVE_PASS:-}" ]]; then
       echo ""
       echo "vms:"
-      sshpass -p "$PVE_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
+      sshpass -p "$PVE_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
         "root@${PVE_IP}" "qm list" 2>/dev/null || echo "  ssh_failed"
     fi
   fi
