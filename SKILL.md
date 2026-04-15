@@ -292,7 +292,7 @@ memory(action="add", target="memory", content="**Agent 本体**: 跑在 <hostnam
 ```bash
 # 在 body-schema.json 中更新 last_full_discovery
 python3 -c "
-import json, datetime
+import json, datetime, os
 p = os.path.expanduser('~/.hermes/skills/agent-embodiment/body-schema.json')
 s = json.load(open(p))
 s['discovery_meta']['last_full_discovery'] = datetime.datetime.now().isoformat()
