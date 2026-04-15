@@ -5,3 +5,5 @@ timestamp	commit	skill	old_score	new_score	status	dimension	note	eval_mode
 2026-04-15T09:45	bad7a50	agent-embodiment	84	86	keep	架构+工作流	结构重组：连接实操整合进Phase2，新增Phase0前置，去除冗余	dry_run
 2026-04-15T09:52	92baa7e	agent-embodiment	86	86	keep	隐私	全部敏感信息清理：IP/用户名/设备名→placeholder，.gitignore，脚本安全化	-	-
 2026-04-15T10:00	1b75390	agent-embodiment	86	88	keep	指令+架构	新增本地推理能力探测(discover-inference.sh)，GPU/VRAM/后端/容量评估	full_test	full_test
+2026-04-15T15:50	38f1630	agent-embodiment	88	72	baseline	综合	v3.0 瘦身重构重新基线（丢失具体指导）	dry_run	dry_run
+2026-04-15T15:55	49a6061	agent-embodiment	72	75	keep	工作流+指令	补发现模式+设备决策流+验证回退+持久化具体化	dry_run	dry_run
