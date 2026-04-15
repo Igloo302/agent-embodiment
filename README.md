@@ -63,7 +63,21 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ## 使用
 
-直接对 Agent 说自然语言：
+**首次使用** — Agent 会自动引导你完成初始化：
+
+```
+Agent：👋 你好！我是 Agent Embodiment —— 你的「身体感」模块。
+      我能自动发现你的运行环境和网络设备。
+      整个初始化大概 30 秒，我带你走一遍？
+你：好
+Agent：📡 我的「身体」：MacBook Pro, macOS 26.3, Apple M1, 16GB
+      接下来要不要扫描一下网络？
+你：扫
+Agent：📡 发现 3 台设备：PVE、Windows VM、路由器
+      ✅ 初始化完成！
+```
+
+**日常使用** — 直接说自然语言：
 
 | 你说 | Agent 做什么 |
 |------|-------------|
