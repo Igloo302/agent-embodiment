@@ -336,6 +336,62 @@ json.dump(s, open(p, 'w'), indent=2)
 
 ---
 
+## Phase 5: 被动感知（日常顺手更新）
+
+**核心原则**：不要专门跑扫描——在日常操作中，遇到新的网络/硬件就顺手记录。
+**边界**：只管网络拓扑和硬件。软件功能、模型、API 配置由其他 skill 和记忆覆盖。
+
+### 触发条件
+
+以下场景**自动触发**增量更新，不需要用户提醒：
+
+| 日常操作 | 发现什么 | 做什么 |
+|---------|---------|--------|
+| SSH 到某台机器 | 新 IP 不在 schema 里 | `update-device.py <ip> --type server --name <hostname>` |
+| SSH 成功后看 `uname -a` | 发现是 VM / 容器 | 更新 type 为 `vm` / `container` |
+| `qm list` 看到新 VM | 新虚拟机 | 加设备条目，type=vm |
+| `docker ps` 发现宿主机有容器 | 确认是 Docker 宿主机 | 标记 type=docker_host |
+| 某设备 SSH 失败 | 连不上 | `update-device.py <ip> --status unreachable` |
+| 扫端口发现新端口 | 新服务端口 | `update-device.py <ip> --ports <new_ports>` |
+| GPU/显存探测 | 硬件能力变化 | 更新 capabilities（cuda/metal/vram_gb） |
+
+### 不碰的（交给其他 skill）
+
+- ❌ Ollama 模型列表 → memory 或 ollama-model-manager
+- ❌ ComfyUI 工作流 → memory
+- ❌ API endpoint 详情 → memory
+- ❌ 软件版本号 → memory
+- ❌ 服务内部配置 → 对应 skill
+
+### 执行规则
+
+1. **静默更新**：顺手做，不打断用户当前任务。更新完不用特别汇报，除非是重要发现（新设备上线）。
+2. **轻量优先**：用 `update-device.py` 单设备增量更新，不跑完整发现流程。
+3. **不重复添加**：脚本自动处理——已存在就更新，不存在才新增。
+4. **保守判断**：不确定设备类型就标 `unknown`，不瞎猜。
+5. **重要发现汇报**：新设备上线、硬件能力变化时，一句话告诉用户。
+
+### 工具
+
+```bash
+# 日常顺手更新（Agent 内部调用，不需要用户知道）
+python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <ip> --type <type> --name <name> --ports <ports>
+
+# 示例：SSH 到某台 Windows VM
+python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <vm-ip> --type vm --name "Win-RTX5070" --ports 22,11434,8188 --capabilities cuda,rtx5070,vram_12gb
+
+# 示例：发现某设备连不上了
+python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <ip> --status unreachable
+```
+
+### 不算被动感知的场景
+
+- 用户明确说「扫描网络」→ 跑完整发现（Phase 1）
+- 用户说「看看我有什么」→ 读 schema（Phase 1 快速读取）
+- 定期过期检查（>24h）→ 建议刷新，但不自动跑
+
+---
+
 ## 发现脚本
 
 `~/.hermes/skills/agent-embodiment/scripts/` 下：
@@ -350,8 +406,76 @@ json.dump(s, open(p, 'w'), indent=2)
 | `discover-inference.sh` | GPU/VRAM/推理后端/模型 |
 | `merge-schema.py` | 自动合并 → body-schema.json |
 | `verify-action.sh` | 操作结果验证 |
+| `update-device.py` | 单设备增量更新（被动感知用） |
 
 脚本失败 fallback：用基础命令（`uname -a`、`hostname`、`ping`）逐个采集。
+
+---
+
+## MCP Server
+
+Embodiment 可以作为 MCP 服务器运行，让任何 MCP 客户端（Hermes、Claude Desktop 等）直接调用其工具。
+
+### 启动
+
+```bash
+# 直接运行（stdio 模式）
+~/.hermes/scripts/embodiment-mcp.sh
+
+# 或用 Hermes venv
+/Users/igloo/.hermes/hermes-agent/venv/bin/python ~/.hermes/skills/agent-embodiment/mcp/server.py
+```
+
+### 可用工具
+
+| 工具 | 说明 |
+|------|------|
+| `discover_self` | 本机信息 |
+| `discover_network` | 网络扫描 |
+| `discover_inference` | GPU/推理能力 |
+| `discover_hardware` | 硬件设备 |
+| `get_schema` | 读取 body-schema |
+| `update_device` | 更新设备信息 |
+| `merge_schema` | 完整发现 + 合并 |
+| `verify_action` | 验证操作结果 |
+
+### CLI 测试
+
+```bash
+# 列出所有工具
+python3 mcp/server.py --list
+
+# 测试工具调用
+python3 mcp/server.py --call discover_self
+python3 mcp/server.py --call get_schema
+```
+
+### 配置 Hermes 使用
+
+在 `~/.hermes/config.yaml` 添加：
+
+```yaml
+mcp_servers:
+  embodiment:
+    command: "/Users/igloo/.hermes/scripts/embodiment-mcp.sh"
+    timeout: 120
+    connect_timeout: 60
+```
+
+重启 Hermes 后，所有 `mcp_embodiment_*` 工具自动可用。
+
+### 架构
+
+```
+agent-embodiment/
+├── mcp/
+│   ├── operations.py    # Contract-first 操作定义
+│   └── server.py        # MCP stdio 服务器
+├── scripts/             # 现有发现脚本
+└── body-schema.json
+```
+
+参考 GBrain 的 contract-first 模式：`operations.py` 定义所有操作，`server.py` 自动生成 MCP 工具。CLI 和 MCP 共享同一套操作定义。
 
 ---
 
@@ -437,5 +561,5 @@ json.dump(s, open(p, 'w'), indent=2)
 ---
 
 **维护者**: 劲阳
-**最后更新**: 2026-04-15
-**版本**: 3.6 (缓存机制重构 + 设备累积发现)
+**最后更新**: 2026-04-20
+**版本**: 3.8 (被动感知 + MCP Server)
