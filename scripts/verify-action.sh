@@ -21,8 +21,33 @@ EXPECTED="${3:-}"
 TIMEOUT="${4:-30}"
 
 SCHEMA="$HOME/.hermes/skills/agent-embodiment/body-schema.json"
+CREDENTIALS="$HOME/.hermes/skills/agent-embodiment/credentials.json"
+SCRIPTS_DIR="$HOME/.hermes/skills/agent-embodiment/scripts"
 
-# 从 schema 读取设备 SSH 别名
+# 从 credential pool 解析凭证引用
+resolve_credential_ref() {
+  local ref="$1"
+  if [[ -f "$CREDENTIALS" ]]; then
+    python3 -c "
+import json
+try:
+    with open('$CREDENTIALS') as f:
+        creds = json.load(f)
+    ref = '$ref'
+    if ref in creds:
+        c = creds[ref]
+        # 输出格式: user|password|key_path|ssh_command
+        user = c.get('user', '')
+        password = c.get('password', '')
+        key_path = c.get('key_path', '')
+        ssh_command = c.get('ssh_command', '')
+        print(f'{user}|{password}|{key_path}|{ssh_command}')
+except: pass
+" 2>/dev/null || echo ""
+  fi
+}
+
+# 从 schema 读取设备 SSH 别名（支持 credential_ref）
 get_ssh_alias() {
   local device_id="$1"
   python3 -c "
@@ -35,13 +60,47 @@ for d in data.get('devices', []):
         if isinstance(access, str):
             print(access)
         elif isinstance(access, dict):
-            ssh = access.get('ssh', '')
-            if isinstance(ssh, dict):
-                print(ssh.get('command', ''))
+            # 支持 credential_ref
+            cred_ref = access.get('credential_ref', '')
+            if cred_ref:
+                print(f'CRED_REF:{cred_ref}')
             else:
-                print(ssh)
+                ssh = access.get('ssh', '')
+                if isinstance(ssh, dict):
+                    print(ssh.get('command', ''))
+                else:
+                    print(ssh)
         break
 " 2>/dev/null || echo ""
+}
+
+# 构建带凭证的 SSH 命令
+build_ssh_command() {
+  local ip="$1"
+  local cred_ref="$2"
+
+  if [[ -n "$cred_ref" ]]; then
+    cred=$(resolve_credential_ref "$cred_ref")
+    if [[ -n "$cred" ]]; then
+      user=$(echo "$cred" | cut -d'|' -f1)
+      key_path=$(echo "$cred" | cut -d'|' -f3)
+      ssh_cmd=$(echo "$cred" | cut -d'|' -f4)
+
+      if [[ -n "$ssh_cmd" ]]; then
+        echo "$ssh_cmd"
+      elif [[ -n "$key_path" ]]; then
+        echo "ssh -i $key_path $user@$ip"
+      elif [[ -n "$user" ]]; then
+        echo "ssh $user@$ip"
+      else
+        echo "ssh $ip"
+      fi
+    else
+      echo "ssh $ip"
+    fi
+  else
+    echo "ssh $ip"
+  fi
 }
 
 # 从 schema 读取 PVE IP
@@ -61,7 +120,17 @@ verify() {
   local result="$1"  # pass or fail
   local detail="$2"
   local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  
+
+  # 记录操作历史
+  local duration_ms="${DURATION_MS:-0}"
+  python3 "$SCRIPTS_DIR/log-operation.py" \
+    --action "$ACTION" \
+    --target "$TARGET" \
+    --result "$result" \
+    --duration "$duration_ms" \
+    --detail "$detail" \
+    2>/dev/null || true
+
   if [[ "$result" == "pass" ]]; then
     echo "{\"status\":\"pass\",\"action\":\"$ACTION\",\"target\":\"$TARGET\",\"detail\":\"$detail\",\"verified_at\":\"$timestamp\"}"
   else
@@ -80,11 +149,21 @@ case "$ACTION" in
   vm-running)
     # TARGET = device_id (如 pve), EXPECTED = vmid (如 103)
     pve_ip=$(get_pve_ip)
+
+    # 检查是否有 credential_ref
+    ssh_alias=$(get_ssh_alias "$TARGET")
+    if [[ "$ssh_alias" == "CRED_REF:"* ]]; then
+      cred_ref="${ssh_alias#CRED_REF:}"
+      ssh_cmd=$(build_ssh_command "$pve_ip" "$cred_ref")
+    else
+      ssh_cmd="ssh root@$pve_ip"
+    fi
+
     if [[ -z "$pve_ip" ]]; then
       verify fail "PVE IP not found in schema"
     fi
     vmid="$EXPECTED"
-    status=$(ssh "root@$pve_ip" "qm status $vmid" 2>/dev/null | awk '{print $2}' || echo "error")
+    status=$($ssh_cmd "qm status $vmid" 2>/dev/null | awk '{print $2}' || echo "error")
     if [[ "$status" == "running" ]]; then
       verify pass "VM $vmid is running"
     else
@@ -95,7 +174,16 @@ case "$ACTION" in
   vm-stopped)
     pve_ip=$(get_pve_ip)
     vmid="$EXPECTED"
-    status=$(ssh "root@$pve_ip" "qm status $vmid" 2>/dev/null | awk '{print $2}' || echo "error")
+
+    ssh_alias=$(get_ssh_alias "$TARGET")
+    if [[ "$ssh_alias" == "CRED_REF:"* ]]; then
+      cred_ref="${ssh_alias#CRED_REF:}"
+      ssh_cmd=$(build_ssh_command "$pve_ip" "$cred_ref")
+    else
+      ssh_cmd="ssh root@$pve_ip"
+    fi
+
+    status=$($ssh_cmd "qm status $vmid" 2>/dev/null | awk '{print $2}' || echo "error")
     if [[ "$status" == "stopped" ]]; then
       verify pass "VM $vmid is stopped"
     else

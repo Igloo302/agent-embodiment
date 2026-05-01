@@ -2,16 +2,56 @@
 name: agent-embodiment
 description: |
   让 Agent 理解自己的「身体」和所处的物理世界——我是谁、我在哪、我能控制什么、我的边界。
-  适用于任何能执行 shell 命令的 Agent（Hermes Agent、Claude Code、OpenClaw、Cursor、Codex CLI 等）。
-  自动发现运行环境、扫描网络设备、维护持久化的本体 Schema、安全分级执行操作。
-  触发词：我的环境、我在哪跑、我的设备、我有什么、自我感知、embodiment、body schema、设备发现、扫描网络、我能控制什么、系统状态、homelab、PVE、虚拟机、VM状态、开关机、启动/关闭VM、查看虚拟机状态、SSH连接、Ollama、本地模型、GPU状态、VRAM、推理能力、模型部署、算力。
-  也适用于：用户问「你跑在什么上面」「你能控制哪些设备」「看看我的网络环境」。
-  English triggers: what am I running on, my devices, scan network, what can I control, my environment, system status.
+  只管「有什么」，不管「怎么用」。操作由各自的 skill 负责（PVE、Docker、Ollama 等）。
+  触发词：我的环境、我在哪跑、有什么设备、扫描网络、embodiment、body schema。
+  English triggers: what am I running on, my devices, scan network, my environment.
+  ⚠️ 首次加载检测：如果 body-schema.json 不存在，主动询问用户是否要初始化。
 ---
 
 # Agent Embodiment · 身体感
 
-> 我知道自己是谁、站在哪里、能举起什么。
+> 我知道自己是谁、站在哪里、周围有什么。
+
+## ⚠️ 首次加载检测（Agent 必读）
+
+**加载此 skill 时，立即检查**：
+
+```bash
+test -f ~/.hermes/skills/agent-embodiment/body-schema.json && echo "exists" || echo "not_found"
+```
+
+**如果 body-schema.json 不存在**，主动询问用户：
+
+```
+👋 检测到这是首次使用 Agent Embodiment。
+
+我可以帮你自动发现：
+  🔍 本机信息（系统、CPU、内存、IP）
+  🌐 网络设备（扫描局域网内的服务器、NAS、VM 等）
+  🎮 推理能力（GPU、Ollama、模型）
+  📷 硬件设备（摄像头、音频、蓝牙等）
+
+要现在开始自动扫描吗？（约 1-2 分钟）
+```
+
+**用户确认后**，执行一键初始化（见 Phase 0）。
+
+**如果 body-schema.json 已存在**，跳过询问，正常加载 skill。
+
+## 核心定位
+
+**只管「有什么」，不管「怎么用」**
+
+| 职责 | 属于 embodiment | 属于其他 skill |
+|------|----------------|---------------|
+| 发现设备 | ✅ | ❌ |
+| 记录设备信息 | ✅ | ❌ |
+| 查询设备状态 | ✅ | ❌ |
+| 操作设备 | ❌ | PVE skill, Docker skill, Ollama skill 等 |
+| 安全分级 | ❌ | 各操作 skill 自己负责 |
+| 验证操作结果 | ❌ | 各操作 skill 自己负责 |
+
+**embodiment 只回答「有什么」，不执行操作。**
 
 ## 设计理念
 
@@ -30,30 +70,59 @@ Agent 也需要类似的能力：
 
 ---
 
-## Phase 0: 首次运行引导
+## Phase 0: 一键初始化（Setup Wizard）
 
-**触发条件**：`body-schema.json` 不存在 = 用户第一次使用。
+**触发条件**：用户确认首次加载时的询问，或用户主动说「初始化」「扫描环境」。
 
-### 流程（两步完成）
+**完整流程**（5个阶段）：
 
-**Step 1: 介绍 + 等待确认**
+### Phase 0.0: 环境检查
 
 ```
-👋 你好！我是 Agent Embodiment —— 你的「身体感」模块。
+1. 检查 MCP Server 状态
+   - query_device 工具可用？
+   - learn_device 工具可用？
+   - 失败 → 提示用户检查 config.yaml 中的 mcp_servers
 
-我能做什么：
-  🔍 自动发现你的运行环境和网络设备
-  📋 维护一份「身体 Schema」—— 记录所有可控设备
-  🔒 安全地帮你操作设备（有确认 + 验证）
+2. 检查依赖
+   - Python 3.8+
+   - nmap / arp / ping（网络扫描）
+   - 缺失 → 提示安装命令
 
-说「开始」我就自动完成初始化（约 30 秒）。
+3. 检查权限
+   - 网络访问权限（macOS 需要授权）
+   - 摄像头/麦克风权限（可选）
 ```
 
-等用户回复「好」「继续」「开始」再进入 Step 2。
+### Phase 0.1: 本机扫描（~5秒）
 
-**Step 2: 一键初始化**
+采集：hostname、OS、架构、CPU、内存、IP、MAC、硬件能力
 
-用户确认后，**按顺序自动执行全部步骤**，中间不需要用户干预：
+### Phase 0.2: 网络扫描（~30-60秒）
+
+- 自动检测网段（en0 → 本地网络，zt* → ZeroTier）
+- ARP 扫描 → 端口探测 → 服务识别
+- 发现设备列表展示（可逐个确认）
+
+### Phase 0.3: 能力探测（可选，~1-2分钟）
+
+对已确认设备深入探测：
+- PVE → SSH 测试（需要认证则引导配置 SSH 密钥）
+- Ollama → GET /api/tags → 发现模型
+- ComfyUI → GET /system_stats → 发现 GPU
+
+**凭据处理原则**：
+- 不存储密码/token 到 schema
+- SSH：引导用户配置 `~/.ssh/config`
+- API：引导用户设置环境变量
+
+### Phase 0.4: 生成 Schema & 演示
+
+1. 写入 body-schema.json
+2. 首次查询演示（让用户看到 query_device 效果）
+3. 完成确认
+
+**自动执行全部步骤**（约 1-2 分钟）：
 
 ```bash
 # 1. 本机发现
@@ -81,14 +150,14 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 以后你可以直接问我：
   - 「你跑在什么上面？」→ 我读档案回答
   - 「扫描一下网络」→ 我重新发现
-  - 「帮我重启 XX」→ 我安全操作 + 验证
+  - 「设备状态怎么样？」→ 我报告网络拓扑
 
 随时叫我就好 🤖
 ```
 
-### 跳过引导
+### 跳过初始化
 
-用户已熟悉 skill 或直接发了具体指令（如「看看我的环境」），**跳过引导**，直接执行对应 Phase。
+用户说「跳过」「不用」「以后再说」→ 不执行初始化，skill 正常加载，下次启动时不再询问（创建空的 body-schema.json 标记已访问）。
 
 ---
 
@@ -225,118 +294,45 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 4. 敏感信息（密码）→ 不写入 schema
 5. 推理后端 → 通用检测（Ollama/vLLM/llama.cpp/LM Studio），不绑特定软件
 
-### body-schema.json 格式
+### body-schema.json 格式（v1.0）
 
 参见 `body-schema.example.json`（完整示例）。核心字段：
 
 ```json
 {
-  "self": { "hostname", "os", "arch", "cpu", "memory_gb", "ip", ... },
+  "self": { "hostname", "os", "arch", "cpu", "memory_gb", "ips", "mac", ... },
   "environment": { "timezone", "networks" },
   "devices": [{
-    "id", "type", "name", "ip", "access", "capabilities", "safety_level", "status"
+    "id": "MAC地址", "mac", "name", "type", "ips", "primary_ip",
+    "access", "capabilities", "safety_level", "status"
   }],
   "services": [{ "id", "name", "url", "capabilities", "safety_level" }],
   "discovery_meta": { "last_full_discovery", "schema_version" }
 }
 ```
 
----
+**设备唯一标识（v1.0 核心改进）**：
 
-## Phase 3: 安全操作
+| 字段 | 说明 |
+|------|------|
+| `id` | 设备唯一标识，使用 MAC 地址（如 `00:11:22:33:44:55`） |
+| `mac` | MAC 地址（与 id 相同） |
+| `ips` | IP 地址数组（支持多网络：本地 + VPN + ZeroTier） |
+| `primary_ip` | 主要 IP（用于默认连接） |
 
-### 安全分级
+**合并逻辑**：
+- 扫描发现新 IP → 查询 MAC → MAC 已存在则追加 IP 到 ips 数组
+- MAC 获取失败 → 用 hostname + IP 组合作为临时 id，标记 `id_type: "temporary"`
+- 后续获取到 MAC 时再合并
 
-| 级别 | 定义 | 行为 |
-|------|------|------|
-| 🟢 只读 | 不改变任何状态 | 直接执行 |
-| 🟡 低风险 | 可逆，影响可控 | 执行后报告 |
-| 🟠 中风险 | 部分可逆，可能影响服务 | 先确认 |
-| 🔴 高风险 | 不可逆或影响全局 | 必须确认 + 说明后果 |
-
-不确定时按高一级处理。
-
-### 确认模板
-
-**中风险：**
-```
-⚠️ 准备执行：{操作描述}
-设备：{设备名} ({ip})
-影响：{具体影响}
-可逆性：{是/否，如何回滚}
-确认执行？[是/否]
-```
-
-**高风险：**
-```
-🔴 危险操作确认：{操作描述}
-设备：{设备名} ({ip})
-后果：{不可逆影响}
-回滚：{能否回滚，怎么做}
-请回复「确认执行」继续，或说「取消」中止。
-```
-
-### 验证闭环
-
-操作完成后必须验证：
-
-```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/verify-action.sh <action> <target> [expected]
-```
-
-返回 JSON：`{"status": "pass"|"fail", "detail": "..."}`
-
-| 动作 | 参数 | 用途 |
-|------|------|------|
-| `vm-running` | `<pve-ip> <vmid>` | VM 是否运行 |
-| `ssh-reachable` | `<ip>` | SSH 端口开放 |
-| `service-up` | `<url>` | HTTP 服务响应 |
-| `ollama-up` / `ollama-model` | `<url> [model]` | 推理服务/模型状态 |
-| `process-running` | `<name>` | 进程状态 |
-| `disk-space` | `<mount> <max%>` | 磁盘使用率 |
-| `network-check` | `<ip> <ports>` | 多端口批量检查 |
-
-**验证失败处理：**
-- 等待 5 秒后重试一次（启动有延迟）
-- 仍失败 → 汇报失败详情，建议可能原因
-- **不自动重试操作** — 避免循环
+**为什么用 MAC 地址**：
+- IP 地址会变（DHCP）
+- hostname 可能重复或修改
+- MAC 地址是硬件唯一标识，不随网络变化
 
 ---
 
-## Phase 4: 持久化
-
-发现完成后，用 memory 工具写入持久记忆：
-
-```
-memory(action="add", target="memory", content="**Agent 本体**: 跑在 <hostname> 上，Hermes v2026.x.x
-**可控设备**: <设备列表摘要>
-**已知限制**: <踩过的坑>
-**最后发现**: <日期>")
-```
-
-更新 discovery_meta 时间戳：
-
-```bash
-python3 -c "
-import json, datetime, os
-p = os.path.expanduser('~/.hermes/skills/agent-embodiment/body-schema.json')
-s = json.load(open(p))
-s['discovery_meta']['last_full_discovery'] = datetime.datetime.now().isoformat()
-json.dump(s, open(p, 'w'), indent=2)
-"
-```
-
-### 写什么 vs 不写什么
-
-| 写入 memory | 不写入 |
-|-------------|--------|
-| 设备类型和 IP | 密码/密钥 |
-| 能力摘要 | 完整 model list（太长） |
-| 踩过的坑 | 临时状态（如当前 CPU 占用） |
-
----
-
-## Phase 5: 被动感知（日常顺手更新）
+## Phase 3: 被动学习（从对话中学习设备）
 
 **核心原则**：不要专门跑扫描——在日常操作中，遇到新的网络/硬件就顺手记录。
 **边界**：只管网络拓扑和硬件。软件功能、模型、API 配置由其他 skill 和记忆覆盖。
@@ -347,12 +343,12 @@ json.dump(s, open(p, 'w'), indent=2)
 
 | 日常操作 | 发现什么 | 做什么 |
 |---------|---------|--------|
-| SSH 到某台机器 | 新 IP 不在 schema 里 | `update-device.py <ip> --type server --name <hostname>` |
+| SSH 到某台机器 | 新 IP 不在 schema 里 | `python3 scripts/update-device.py --ip <ip> --type server --name <hostname>` |
 | SSH 成功后看 `uname -a` | 发现是 VM / 容器 | 更新 type 为 `vm` / `container` |
 | `qm list` 看到新 VM | 新虚拟机 | 加设备条目，type=vm |
 | `docker ps` 发现宿主机有容器 | 确认是 Docker 宿主机 | 标记 type=docker_host |
-| 某设备 SSH 失败 | 连不上 | `update-device.py <ip> --status unreachable` |
-| 扫端口发现新端口 | 新服务端口 | `update-device.py <ip> --ports <new_ports>` |
+| 某设备 SSH 失败 | 连不上 | `python3 scripts/update-device.py --ip <ip> --status unreachable` |
+| 扫端口发现新端口 | 新服务端口 | `python3 scripts/update-device.py --ip <ip> --ports <new_ports>` |
 | GPU/显存探测 | 硬件能力变化 | 更新 capabilities（cuda/metal/vram_gb） |
 
 ### 不碰的（交给其他 skill）
@@ -366,23 +362,182 @@ json.dump(s, open(p, 'w'), indent=2)
 ### 执行规则
 
 1. **静默更新**：顺手做，不打断用户当前任务。更新完不用特别汇报，除非是重要发现（新设备上线）。
-2. **轻量优先**：用 `update-device.py` 单设备增量更新，不跑完整发现流程。
-3. **不重复添加**：脚本自动处理——已存在就更新，不存在才新增。
+2. **轻量优先**：用 `scripts/update-device.py` 单设备增量更新，不跑完整发现流程。
+3. **不重复添加**：MCP 工具自动处理——已存在就更新，不存在才新增。
 4. **保守判断**：不确定设备类型就标 `unknown`，不瞎猜。
 5. **重要发现汇报**：新设备上线、硬件能力变化时，一句话告诉用户。
 
 ### 工具
 
-```bash
-# 日常顺手更新（Agent 内部调用，不需要用户知道）
-python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <ip> --type <type> --name <name> --ports <ports>
+**MCP 工具**（供 Agent 调用）：
 
-# 示例：SSH 到某台 Windows VM
-python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <vm-ip> --type vm --name "Win-RTX5070" --ports 22,11434,8188 --capabilities cuda,rtx5070,vram_12gb
+```bash
+# 查询设备信息（返回完整 schema 或按条件筛选）
+mcp_embodiment_query_device()
+mcp_embodiment_query_device(name="Windows")
+mcp_embodiment_query_device(capability="cuda")
+
+# 从对话中学习设备信息（被动学习核心工具）
+mcp_embodiment_learn_device(text="用户消息")
+```
+
+**内部脚本**（供 skill 逻辑直接调用）：
+
+```bash
+# 更新单个设备信息
+python3 scripts/update-device.py --ip 192.168.5.100 --type server --name "主服务器"
+
+# 示例：SSH 到某台 Windows VM 后更新
+python3 scripts/update-device.py --ip 192.168.5.109 --type vm --name "Win-RTX5070" --ports "22,11434,8188" --capabilities "cuda,rtx5070,vram_12gb"
 
 # 示例：发现某设备连不上了
-python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <ip> --status unreachable
+python3 scripts/update-device.py --ip 192.168.5.100 --status unreachable
+
+# 从对话中学习（脚本 fallback）
+python3 scripts/learn-device.py --text "用户消息"
 ```
+
+### 从对话中学习设备信息
+
+用户可能在日常对话中提及设备信息，Agent 应自动识别并记录：
+
+| 用户说 | 发现什么 | 调用 |
+|--------|---------|------|
+| "打开 192.168.5.1 的路由器..." | IP + 类型(router) | `mcp_embodiment_learn_device(text="...")` |
+| "拍一张照片" | 暗示摄像头能力 | `mcp_embodiment_learn_device(text="...", ip="<本机IP>", capabilities="camera")` |
+| "连上 PVE 看看" | 已知设备名 PVE | `mcp_embodiment_learn_device(text="...")` |
+| "用 Ollama 跑一下" | 推理能力 | `mcp_embodiment_learn_device(text="...")` |
+
+**提取规则**：
+
+```
+IP 地址：正则匹配 (\d{1,3}\.){3}\d{1,3}
+
+设备类型关键词：
+  路由器/router → router
+  交换机/switch → switch
+  NAS/群晖/威联通 → nas
+  服务器/server → server
+  PVE/Proxmox → hypervisor
+  摄像头/相机/camera → camera
+  打印机/printer → printer
+  VM/虚拟机 → vm
+
+设备能力关键词：
+  拍照/摄像头 → camera
+  SSH/ssh → ssh
+  HTTP/网页 → http
+  Ollama/推理 → inference
+  ComfyUI/生图 → image_gen
+```
+
+**使用示例**（优先 MCP 工具）：
+
+```bash
+# 从对话文本中自动提取（MCP 工具，推荐）
+mcp_embodiment_learn_device(text="打开 192.168.5.1 的路由器设置")
+
+# 预览模式（不实际更新）
+mcp_embodiment_learn_device(text="连上 PVE 看看", dry_run=true)
+
+# 显式指定信息
+mcp_embodiment_learn_device(text="那个服务器", ip="192.168.5.100", type="server", name="主服务器")
+
+# 脚本方式（MCP 不可用时的 fallback）
+python3 ~/.hermes/skills/agent-embodiment/scripts/learn-device.py --text "打开 192.168.5.1 的路由器设置"
+```
+
+**Agent 行为指南**：
+
+1. **静默学习**：在对话中识别到设备信息时，自动调用 `mcp_embodiment_learn_device`，不打断用户
+2. **置信度判断**：
+   - 高：同时有 IP 和设备类型关键词
+   - 中：只有 IP 或只有设备类型
+   - 低：只有模糊描述
+3. **不重复添加**：MCP 工具自动处理——已存在就更新，不存在才新增
+4. **标记来源**：被动学习的设备标记 `discovered: false` 和 `source: "passive_learning"`
+5. **重要发现汇报**：发现新设备时，一句话告诉用户
+
+### 自动学习机制
+
+Agent 应在对话中**自动识别**设备信息并静默学习，无需用户显式请求。
+
+#### 自动触发条件
+
+以下模式出现时，Agent **应自动调用** `mcp_embodiment_learn_device`：
+
+| 触发类型 | 模式 | 示例 |
+|---------|------|------|
+| **IP 地址** | `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}` | "192.168.5.1"、"10.0.0.100" |
+| **设备关键词** | 路由器/交换机/NAS/PVE/服务器/虚拟机/VM | "打开 PVE"、"那个 NAS" |
+| **能力关键词** | SSH/Ollama/推理/ComfyUI/摄像头/拍照 | "用 Ollama 跑一下"、"拍张照" |
+| **操作暗示** | 连接/登录/打开/访问 + 设备 | "连上那台服务器" |
+
+#### 置信度规则
+
+| 置信度 | 条件 | Agent 行为 |
+|--------|------|-----------|
+| **high** | IP + 类型关键词 同时出现 | **自动添加**，静默执行，完成后一句话告知 |
+| **medium** | IP 或 类型关键词 单独出现 | **可选确认**，询问用户确认设备类型或 IP |
+| **low** | 只有模糊描述（"那个机器"） | **不添加**，等待更多信息 |
+
+#### 调用示例
+
+```bash
+# 高置信度：IP + 类型 → 自动执行
+用户: "帮我看看 192.168.5.100 的服务器状态"
+Agent: [静默调用] mcp_embodiment_learn_device(text="192.168.5.100 的服务器")
+       → 自动添加 IP=192.168.5.100, type=server
+       → 继续执行用户请求
+
+# 中置信度：只有 IP → 询问确认
+用户: "连一下 192.168.5.50"
+Agent: "好的，192.168.5.50 是什么类型的设备？（服务器/VM/NAS/其他）"
+
+# 中置信度：只有类型 → 询问 IP
+用户: "看看那个 NAS"
+Agent: "好的，NAS 的 IP 地址是多少？"
+
+# 低置信度：模糊描述 → 不添加
+用户: "那个机器怎么了"
+Agent: [不调用 mcp_embodiment_learn_device，继续对话]
+```
+
+#### 静默调用代码片段
+
+Agent 在识别到设备信息后，应在执行用户请求**之前**静默调用：
+
+```python
+# 伪代码：Agent 内部逻辑
+def on_device_info_detected(text, ip=None, device_type=None):
+    confidence = calculate_confidence(ip, device_type)
+
+    if confidence == "high":
+        # 静默调用 MCP 工具，不打断用户
+        mcp_embodiment_learn_device(text=text)
+        # 继续执行用户请求
+        return True
+    elif confidence == "medium":
+        # 可选：询问用户确认
+        if ip and not device_type:
+            device_type = ask_user("这是什么类型的设备？")
+        elif device_type and not ip:
+            ip = ask_user("设备的 IP 地址是多少？")
+
+        if ip and device_type:
+            mcp_embodiment_learn_device(text=text, ip=ip, type=device_type)
+            return True
+    return False
+```
+
+#### 与被动感知的配合
+
+- **被动感知**（Phase 5）：在日常操作中自动更新设备状态
+- **自动学习**：在对话中识别新设备信息并添加
+
+两者互补：
+- 被动感知关注**已有设备的状态变化**
+- 自动学习关注**新设备的发现和添加**
 
 ### 不算被动感知的场景
 
@@ -407,6 +562,7 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/update-device.py <ip> --status
 | `merge-schema.py` | 自动合并 → body-schema.json |
 | `verify-action.sh` | 操作结果验证 |
 | `update-device.py` | 单设备增量更新（被动感知用） |
+| `learn-device.py` | 从对话文本中学习设备信息 |
 
 脚本失败 fallback：用基础命令（`uname -a`、`hostname`、`ping`）逐个采集。
 
@@ -426,18 +582,128 @@ Embodiment 可以作为 MCP 服务器运行，让任何 MCP 客户端（Hermes�
 /Users/igloo/.hermes/hermes-agent/venv/bin/python ~/.hermes/skills/agent-embodiment/mcp/server.py
 ```
 
-### 可用工具
+### 可用工具（v1.0 精简版）
 
 | 工具 | 说明 |
 |------|------|
-| `discover_self` | 本机信息 |
-| `discover_network` | 网络扫描 |
-| `discover_inference` | GPU/推理能力 |
-| `discover_hardware` | 硬件设备 |
-| `get_schema` | 读取 body-schema |
-| `update_device` | 更新设备信息 |
-| `merge_schema` | 完整发现 + 合并 |
-| `verify_action` | 验证操作结果 |
+| `query_device` | 查询设备（无参数返回完整schema，有参数按条件筛选） |
+| `learn_device` | 从对话文本中自动学习设备信息（被动学习核心） |
+
+**query_device 参数**：`name`（模糊匹配）、`ip`（精确匹配）、`capability`、`type`、`status`
+
+**不暴露为 MCP 的功能**（用脚本实现）：
+- 更新设备信息 → `scripts/update-device.py`
+- 新手引导 → Skill 加载时自动检测
+- 生命周期检查 → 后台定时任务
+- 验证操作结果 → 调用方 skill 自己做
+
+### learn_device 工具详解
+
+`learn_device` 是被动感知的核心工具，让 Agent 能从自然语言对话中自动识别和记录设备信息。
+
+#### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `text` | string | ✅ | 用户对话文本，从中提取设备信息 |
+| `context` | string | ❌ | 额外的对话上下文 |
+| `ip` | string | ❌ | 显式指定 IP（覆盖自动提取） |
+| `type` | string | ❌ | 显式指定设备类型 |
+| `name` | string | ❌ | 显式指定设备名称 |
+| `capabilities` | string | ❌ | 逗号分隔的能力列表 |
+| `dry_run` | boolean | ❌ | 预览模式，不实际更新 schema |
+
+#### 自动触发场景
+
+MCP 客户端（如 Hermes）应在以下场景**自动调用** `learn_device`：
+
+| 触发类型 | 模式 | 示例 |
+|---------|------|------|
+| **IP 地址** | `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}` | "192.168.5.1"、"10.0.0.100" |
+| **设备关键词** | 路由器/交换机/NAS/PVE/服务器/虚拟机/VM | "打开 PVE"、"那个 NAS" |
+| **能力关键词** | SSH/Ollama/推理/ComfyUI/摄像头/拍照 | "用 Ollama 跑一下"、"拍张照" |
+| **操作暗示** | 连接/登录/打开/访问 + 设备 | "连上那台服务器" |
+
+#### 置信度规则
+
+| 置信度 | 条件 | Agent 行为 |
+|--------|------|------------|
+| **high** | IP + 类型关键词 同时出现 | **自动添加**，静默执行，完成后一句话告知 |
+| **medium** | IP 或 类型关键词 单独出现 | **可选确认**，询问用户确认设备类型或 IP |
+| **low** | 只有模糊描述（"那个机器"） | **不添加**，等待更多信息 |
+
+#### MCP 调用示例
+
+```json
+// 高置信度：IP + 类型 → 自动执行
+{
+  "name": "learn_device",
+  "arguments": {
+    "text": "帮我看看 192.168.5.100 的服务器状态"
+  }
+}
+// 返回: {"status": "success", "devices_found": 1, "confidence": "high"}
+
+// 显式指定信息
+{
+  "name": "learn_device",
+  "arguments": {
+    "text": "连上那个服务器",
+    "ip": "192.168.5.100",
+    "type": "server",
+    "name": "主服务器"
+  }
+}
+
+// 预览模式
+{
+  "name": "learn_device",
+  "arguments": {
+    "text": "打开 192.168.5.1 的路由器设置",
+    "dry_run": true
+  }
+}
+```
+
+#### 返回值
+
+```json
+{
+  "status": "success",
+  "learned": {
+    "parsed": {
+      "ips": ["192.168.5.100"],
+      "device_types": ["server"],
+      "capabilities": ["ssh"],
+      "device_name": "主服务器",
+      "confidence": "high"
+    },
+    "devices": [
+      {
+        "id": "192-168-5-100",
+        "type": "server",
+        "name": "主服务器",
+        "ip": "192.168.5.100",
+        "capabilities": ["ssh"],
+        "discovered": false,
+        "source": "passive_learning"
+      }
+    ],
+    "actions": ["added"]
+  },
+  "devices_found": 1,
+  "confidence": "high"
+}
+```
+
+#### 与被动感知的配合
+
+- **被动感知**（Phase 5）：在日常操作中自动更新设备状态
+- **learn_device MCP 工具**：在对话中识别新设备信息并添加
+
+两者互补：
+- 被动感知关注**已有设备的状态变化**
+- learn_device 关注**新设备的发现和添加**
 
 ### CLI 测试
 
@@ -527,11 +793,13 @@ agent-embodiment/
 | 异常 | 处理 |
 |------|------|
 | SSH 权限不足 (Permission denied) | 标记该设备 `status: auth_required`，跳过，建议用户配置 key |
-| 所有设备 unreachable | 检查本机网络连通性，建议刷新 schema，不删除旧数据 |
+| 所有设备 unreachable | 检查本机网络连通性，确认是否在目标网段。被动学习的设备可能在不同网络 |
 | 脚本无执行权限 | `chmod +x scripts/*.sh` 后重试 |
 | JSON 解析失败 | 删除损坏 schema，重新完整发现 |
 | 发现脚本超时 | 单设备超时跳过，不阻塞整体流程 |
 | 网络扫描结果不一致 | `discover-network.sh` 每次运行可能发现不同设备（ARP/mDNS 时序差异）。merge-schema.py 已处理：旧缓存 + 新扫描结果合并，累积发现不丢设备 |
+| 端口扫描全部失败 | 检查：(1) 是否在目标网段 (2) 目标设备是否开机 (3) 防火墙是否阻止。macOS 使用 `nc -G` 超时参数 |
+| ARP 表为空 | 当前网段无其他设备，或刚开机 ARP 缓存未建立。等待几分钟或主动访问网络资源 |
 
 ### merge-schema.py 设计要点
 
@@ -553,13 +821,334 @@ agent-embodiment/
 | `detect_inference_backends()` | 探测 Ollama/vLLM/LM Studio |
 | `parse_network_output(output)` | 解析网络扫描文本 → dict |
 | `get_local_ips()` | 获取本机所有 IP |
-| `guess_device_type(ip, info)` | 端口 → 设备类型推断 |
+| `guess_device_type(ip, info)` | 多源推断设备类型（mDNS/HTTP/SSH/端口） |
+| `probe_device_fingerprint(ip, ports)` | 探测设备指纹（HTTP Server/SSH banner/Ollama info） |
+| `get_cache_ttl(dtype)` | 获取设备类型的缓存 TTL |
+| `is_device_cache_expired(device)` | 检查设备缓存是否过期 |
+| `get_devices_needing_refresh(schema)` | 获取需要刷新的设备（分组） |
 | `discover_network_devices()` | 旧缓存 + 新扫描 → 累积合并设备列表 |
 | `merge_schema(...)` | 合并 self + 设备 + 推理后端 → schema |
 | `main()` | 6 步流程编排 |
 
 ---
 
+## v0.3.0 新功能
+
+### 智能缓存策略
+
+不同设备类型使用不同缓存时间：
+
+| 设备类型 | 缓存 TTL |
+|---------|---------|
+| 物理服务器、NAS、Hypervisor、路由器 | 24h |
+| VM、Docker 宿主机、推理服务器 | 4h |
+| 手机、笔记本、平板 | 1h |
+| 容器 | 30min |
+
+缓存过期后自动标记，下次发现时优先刷新过期设备。
+
+### 网络发现分层健壮性
+
+`discover-network.sh` 采用三层发现架构：
+
+1. **Layer 1: 本地网络**（en0/wlan0/eth0）→ 始终尝试
+2. **Layer 2: VPN/ZeroTier**（utun/zt*）→ 可选，失败不影响本地发现
+3. **Layer 3: 远程网络** → 通过 SSH 代理发现
+
+一层失败不影响其他层，确保基础发现始终可用。
+
+### 设备类型推断增强
+
+`guess_device_type()` 结合多种信息推断：
+
+1. **mDNS 名称**：MacBook-Pro.local → 笔记本，iPhone.local → 手机
+2. **HTTP Server 响应头**：Server: Synology → NAS
+3. **SSH banner**：OpenSSH_8.9p1 Ubuntu → Linux 服务器
+4. **Ollama API 响应**：/api/tags 返回格式 → 推理服务器
+5. **端口组合**：8006 → PVE，11434 → Ollama
+
+### Credential Pool 集成
+
+设备 `access` 字段支持引用 credential pool：
+
+```json
+{
+  "access": {
+    "method": "ssh",
+    "credential_ref": "win-vm-ssh"
+  }
+}
+```
+
+凭证定义在 `credentials.json`：
+
+```json
+{
+  "win-vm-ssh": {
+    "user": "administrator",
+    "password": "your-password"
+  }
+}
+```
+
+### 操作历史记录
+
+`log-operation.py` 记录所有操作：
+
+```bash
+# 记录操作
+python3 log-operation.py --action vm-start --target 192.168.5.109 --result success --duration 3500
+
+# 查看历史
+python3 log-operation.py --list
+python3 log-operation.py --list --target 192.168.5.109
+
+# 统计
+python3 log-operation.py --stats --days 7
+```
+
+日志格式：
+```json
+{
+  "timestamp": "2026-04-26T14:00:00+08:00",
+  "action": "vm-start",
+  "target": "192.168.5.109",
+  "target_name": "Win-RTX5070",
+  "result": "success",
+  "duration_ms": 3500
+}
+```
+
+### 被动感知自动化
+
+`update-device.py` 增强 SSH 成功/失败处理：
+
+```bash
+# SSH 成功后自动更新
+python3 update-device.py --ssh-success <ip> --hostname <hostname> --uname "<uname -a output>"
+
+# SSH 失败后自动标记
+python3 update-device.py --ssh-fail <ip> --reason "Connection refused"
+
+# 解析 SSH 输出自动提取信息
+python3 update-device.py --parse-output <ip> --ssh-output "$(ssh <ip> 'uname -a && docker ps')"
+```
+
+---
+
+## v0.4.0 新功能
+
+### 设备关系图（device-graph.py）
+
+可视化设备之间的层级关系，支持多种输出格式：
+
+```bash
+# 打印 ASCII 关系树
+python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py
+
+# 自动推断并更新设备关系
+python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --build
+
+# 输出 JSON 格式（可用于其他工具）
+python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --format json
+
+# 输出 Mermaid 图表代码（可渲染为图片）
+python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --format mermaid -o graph.md
+```
+
+**关系推断规则**：
+- PVE (hypervisor) → VM：通过 `qm list` 获取 VMID 关系
+- SSH 代理发现 → 标记 `parent_id`：如果设备通过 `access.via` 或 `access.proxy` 访问
+- Docker host → Container：同一 IP 的容器标记父设备
+
+**输出示例**：
+```
+设备关系树:
+========================================
+🖥️ pve-main (192.168.1.100) [hypervisor] 🟢
+└── 💻 win-vm (192.168.1.101) [vm] 🟢
+└── 📦 docker-host (192.168.1.102) [docker_host] 🟢
+    └── 📦 nginx-container (192.168.1.102) [container] 🟢
+💾 nas (192.168.1.200) [nas] 🟢
+```
+
+### 异常检测（anomaly-detector.py）
+
+自动检测设备状态变化并发出告警：
+
+```bash
+# 执行检测
+python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py
+
+# 查看历史告警
+python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --history
+
+# 确认告警
+python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --ack <alert_id>
+python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --ack-all
+
+# 配置 webhook 通知
+python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --set-webhook feishu:https://open.feishu.cn/...
+```
+
+**检测类型**：
+| 类型 | 说明 | 级别 |
+|------|------|------|
+| `device_offline` | 设备离线（之前 reachable 现在 unreachable） | warning |
+| `device_online` | 设备上线（之前 offline 现在 reachable） | info |
+| `new_device` | 新设备发现 | info |
+| `capability_lost` | 能力丢失（端口关闭、服务停止） | warning |
+| `capability_gained` | 新能力获得 | info |
+| `port_closed` | 端口关闭 | warning |
+| `port_opened` | 端口开放 | info |
+
+**告警冷却**：相同告警在 30 分钟内不重复发送。
+
+### 首次引导优化
+
+**并行发现**：
+- 使用 `ThreadPoolExecutor` 并行运行发现脚本
+- 互不依赖的脚本同时执行，总时间从 ~120s 降至 ~60s
+
+**实时进度反馈**：
+```
+=== Schema 自动合并 ===
+
+1/6 读取 schema...
+   空 schema（首次运行）
+
+2/6 并行发现（4 个脚本）...
+   [1/4] discover-self.sh ✓ 完成 (2.3s)
+   [2/4] discover-hardware.sh ✓ 完成 (5.1s)
+   [3/4] discover-inference.sh ✓ 完成 (8.2s)
+   [4/4] discover-network.sh ✓ 完成 (45.6s)
+
+3/6 测试连通性...
+   ...
+```
+
+**中断恢复**：
+- 进度保存到 `~/.hermes/skills/agent-embodiment/.cache/discovery-progress.json`
+- 中断后重新运行，跳过已完成的脚本
+- 手动清除缓存可重新开始：`rm -rf .cache/`
+
+**单脚本超时**：
+- 每个脚本有独立超时时间（默认 30s）
+- 超时后跳过，不阻塞整体流程
+- 网络发现脚本超时设为 60s
+
+---
+
+## 快速使用指南
+
+### 常用命令速查表
+
+#### MCP 工具调用（推荐）
+
+```bash
+# 获取当前设备清单
+mcp_embodiment_query_device
+
+# 按条件查询
+mcp_embodiment_query_device(name="Windows")
+mcp_embodiment_query_device(capability="cuda")
+mcp_embodiment_query_device(type="vm", status="reachable")
+
+# 从对话中学习设备信息（被动学习核心）
+mcp_embodiment_learn_device(text="打开 192.168.5.1 的路由器设置")
+```
+
+#### 脚本调用（首次初始化/完整扫描）
+
+```bash
+# 本机信息
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
+
+# 网络扫描
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
+
+# 推理能力检测
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
+
+# 硬件设备
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
+
+# 合并到 Schema
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+
+# 查看设备关系图
+python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py
+
+# 异常检测
+python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py
+```
+
+### 典型使用场景
+
+| 场景 | 方式 |
+|------|------|
+| 首次初始化 | 脚本：`merge-schema.py`（Setup Wizard） |
+| 查看我的环境 | MCP：`mcp_embodiment_query_device` |
+| 查询特定设备 | MCP：`mcp_embodiment_query_device(name="Windows")` |
+| 扫描网络 | 脚本：`discover-network.sh` |
+| 检查 GPU | 脚本：`discover-inference.sh` |
+| 查看设备关系 | 脚本：`device-graph.py` |
+| 检查异常 | 脚本：`anomaly-detector.py` |
+| 更新设备状态 | 脚本：`update-device.py`（内部脚本，非 MCP） |
+| 从对话学习 | MCP：`mcp_embodiment_learn_device` |
+
+### 性能调优
+
+```bash
+# 快速网络扫描（只扫描 ARP 表，不扫全子网）
+bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh --quick
+
+# 调整超时时间（单位：秒）
+export DISCOVERY_TIMEOUT=60
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+
+# 并行发现（默认启用，可调整并发数）
+export DISCOVERY_MAX_WORKERS=8
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+
+# 清除缓存重新发现
+rm -rf ~/.hermes/skills/agent-embodiment/.cache/
+mcp_embodiment_merge_schema
+```
+
+### 故障排除
+
+| 问题 | 解决方案 |
+|------|---------|
+| 网络发现失败 | 检查本机网络连接，尝试 `--quick` 模式 |
+| Schema 损坏 | 删除 `body-schema.json` 后重新运行 `merge_schema` |
+| 脚本无权限 | `chmod +x ~/.hermes/skills/agent-embodiment/scripts/*.sh` |
+| 发现结果不完整 | 清除缓存后重新扫描：`rm -rf .cache/ && mcp_embodiment_merge_schema` |
+| 设备显示 unreachable | 检查目标设备是否开机、网络是否可达、防火墙设置 |
+| MCP 工具不可用 | 检查 `~/.hermes/config.yaml` 中 embodiment MCP server 配置 |
+| 端口扫描全部失败 | **常见原因**：(1) 当前不在目标网段 (2) 目标设备未开放常用端口 (3) 防火墙阻止扫描。**建议**：使用被动学习添加设备信息，当回到目标网络时会自动检测状态 |
+| ARP 表为空 | 当前网段无其他设备，或刚开机 ARP 缓存未建立。等待几分钟或主动访问网络资源 |
+| 扫描到 0 台设备 | 当前网段设备未开放常用端口（22, 80, 443, 5000, 8006, 11434 等）。这是正常的，说明端口扫描工作正常，只是目标网段不同 |
+
+```
+~/.hermes/skills/agent-embodiment/
+├── body-schema.json          # 主 Schema 文件
+├── .cache/                   # 发现脚本缓存
+│   ├── discover-self.stdout
+│   ├── discover-network.stdout
+│   └── discovery-progress.json
+└── scripts/                  # 发现脚本
+```
+
+---
+
+## 参考资料
+
+- `references/mcp-vs-skill-vs-cli.md` — MCP vs Skill vs CLI 的触发可靠性分析，何时用 MCP、何时用 CLI
+- **v1.0 产品方案** — `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/ObsidianVault/1-Projects/Skills/agent-embodiment-v1.md`
+
+---
+
 **维护者**: 劲阳
-**最后更新**: 2026-04-20
-**版本**: 0.2.0 (被动感知 + MCP Server)
+**最后更新**: 2026-05-01
+**版本**: 1.0.0 (MCP工具精简为2个 + MAC地址唯一标识 + 设备合并逻辑)

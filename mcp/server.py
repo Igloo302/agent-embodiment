@@ -14,12 +14,13 @@ Architecture inspired by GBrain's contract-first MCP implementation.
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
+    from mcp.types import Tool, TextContent, Prompt, Resource
 except ImportError:
     print("Error: mcp package not installed. Install with: pip install mcp", file=sys.stderr)
     sys.exit(1)
@@ -100,6 +101,39 @@ async def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> List[Text
                 "message": str(e)
             }, indent=2, ensure_ascii=False)
         )]
+
+
+# --- Prompts (empty for now, but required by MCP spec) ---
+@app.list_prompts()
+async def list_prompts() -> List[Prompt]:
+    """List available prompts (none for embodiment)."""
+    return []
+
+
+# --- Resources ---
+SCHEMA_PATH = Path(__file__).parent.parent / "body-schema.json"
+
+@app.list_resources()
+async def list_resources() -> List[Resource]:
+    """List available resources."""
+    return [
+        Resource(
+            uri="embodiment://schema",
+            name="body-schema.json",
+            description="Current device schema with all discovered devices",
+            mimeType="application/json"
+        )
+    ]
+
+
+@app.read_resource()
+async def read_resource(uri: str) -> str:
+    """Read a resource by URI."""
+    if uri == "embodiment://schema":
+        if SCHEMA_PATH.exists():
+            return SCHEMA_PATH.read_text()
+        return json.dumps({"error": "schema_not_found", "message": "body-schema.json not found"})
+    raise ValueError(f"Unknown resource: {uri}")
 
 
 # --- CLI Commands ---
