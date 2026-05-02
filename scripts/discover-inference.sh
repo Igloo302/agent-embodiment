@@ -139,15 +139,23 @@ for d in data.get('devices', []):
   done <<< "$remote_endpoints"
 fi
 
-# ARP 补充扫描 Ollama 常见端口
-for ip in $(arp -a 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | sort -u); do
+# ARP 补充扫描 Ollama 常见端口（分批扫描，避免超时）
+arp_ips=$(arp -a 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | sort -u)
+batch_size=20
+batch_count=0
+for ip in $arp_ips; do
   # 跳过已覆盖的
   [[ "$ip" == "127.0.0.1" ]] && continue
-  if curl -s --max-time 2 "http://$ip:11434/api/tags" >/dev/null 2>&1; then
+  if curl -s --max-time 1 "http://$ip:11434/api/tags" >/dev/null 2>&1; then
     # 避免重复
     if ! echo "$remote_endpoints" 2>/dev/null | grep -q "$ip"; then
       check_ollama "http://$ip:11434" "$ip:11434" || true
     fi
+  fi
+  # 分批控制：每 batch_size 个 IP 暂停 0.5 秒
+  batch_count=$((batch_count + 1))
+  if [[ $((batch_count % batch_size)) -eq 0 ]]; then
+    sleep 0.5
   fi
 done
 

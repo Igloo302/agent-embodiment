@@ -5,16 +5,42 @@
 
 set -euo pipefail
 
+# 禁用输出缓冲
+export PYTHONUNBUFFERED=1
+
 SCHEMA="$HOME/.hermes/skills/agent-embodiment/body-schema.json"
 SCRIPTS="$HOME/.hermes/skills/agent-embodiment/scripts"
 
-echo "=== 网络发现 ==="
-echo ""
+echo "=== 网络发现 ===" >&2
+echo "" >&2
 
 # ---------------------------------------------------------------
-# Step 1: 收集 IP
+# Step 1: 收集 IP 和可达网段
 # ---------------------------------------------------------------
 ips=()
+subnets=()
+
+# 本机 IP（提前获取，用于过滤）
+my_ips=$(ifconfig 2>/dev/null | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}')
+
+# 从路由表发现可达网段（提取直连网段 + 路由条目）
+while IFS=$'\t ' read -r dest gateway flags _; do
+  # 跳过 default、link-local、localhost
+  [[ "$dest" =~ ^(default|127\.|169\.254\.|fe80::|::) ]] && continue
+  # 只处理 IPv4 私有网段
+  if [[ "$dest" =~ ^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[01])\. ]]; then
+    # 提取网段前缀（去掉 CIDR 后缀，或直接取前 3 段）
+    if [[ "$dest" =~ / ]]; then
+      subnet=$(echo "$dest" | cut -d'/' -f1)
+    else
+      subnet="$dest"
+    fi
+    subnet_prefix=$(echo "$subnet" | cut -d'.' -f1-3)
+    if [[ ! " ${subnets[*]:-} " =~ " $subnet_prefix " ]]; then
+      subnets+=("$subnet_prefix")
+    fi
+  fi
+done < <(netstat -rn 2>/dev/null)
 
 # 从 schema 读取已知设备（如果有）
 if [[ -f "$SCHEMA" ]]; then
@@ -32,27 +58,36 @@ except: pass
 " 2>/dev/null)
 fi
 
-# ARP 表补充
-for ip in $(arp -a 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | sort -u); do
+# ARP 表收集（只扫 ARP 表，不扫整个网段）
+echo "从 ARP 表收集 IP ..."
+echo ""
+arp_ips=$(arp -a 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+' | sort -u)
+for ip in $arp_ips; do
+  # 跳过本机 IP
+  [[ " ${my_ips[*]:-} " =~ " $ip " ]] && continue
+  # 跳过已收集的
   if [[ ! " ${ips[*]:-} " =~ " $ip " ]]; then
-    if ping -c 1 -t 1 "$ip" >/dev/null 2>&1; then
-      ips+=("$ip")
-    fi
+    ips+=("$ip")
   fi
 done
+echo "✓ ARP 表收集完成，共 ${#ips[@]} 个 IP"
+echo ""
 
-# 本机 IP
-my_ips=$(ifconfig 2>/dev/null | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}')
+# 添加本机 IP
 for ip in $my_ips; do
   [[ ! " ${ips[*]:-} " =~ " $ip " ]] && ips+=("$ip")
 done
 
-echo "发现 ${#ips[@]} 台设备"
+echo "=========================================="
+echo "阶段 1 完成：发现 ${#ips[@]} 台存活设备"
+echo "=========================================="
 echo ""
 
 # ---------------------------------------------------------------
 # Step 2: 端口扫描（通用端口列表）
 # ---------------------------------------------------------------
+echo "开始端口扫描..."
+echo ""
 # 基础: SSH, HTTP, HTTPS, DNS
 # NAS: SMB, NFS, DSM
 # 媒体: Jellyfin, Plex, DLNA
@@ -85,7 +120,8 @@ found=0
 tmpfile=$(mktemp)
 trap "rm -f '$tmpfile'" EXIT
 
-# 并行端口扫描：所有 (ip, port) 组合同步并发
+# 并行端口扫描（限制并发数，避免资源耗尽）
+MAX_PARALLEL=50
 scan_port() {
   local ip="$1" port="$2"
   if nc -z -w 1 -G 1 "$ip" "$port" 2>/dev/null; then
@@ -94,21 +130,36 @@ scan_port() {
   fi
 }
 
+# macOS 不支持 wait -n，用文件描述符控制并发
+job_count=0
 for ip in "${ips[@]}"; do
   [[ -z "$ip" ]] && continue
-  if ! ping -c 1 -t 1 "$ip" >/dev/null 2>&1; then
-    continue
-  fi
   for port in $PORTS; do
     scan_port "$ip" "$port" &
+    ((job_count++))
+    # 每 MAX_PARALLEL 个进程等待一次
+    if [[ $((job_count % MAX_PARALLEL)) -eq 0 ]]; then
+      wait
+    fi
   done
 done
 wait
 
-# 按 IP 排序输出
+# 按 IP 排序输出，并附带 MAC 地址
 if [[ -s "$tmpfile" ]]; then
+  # 输出表头
+  printf "%-16s %-17s %-8s %-18s %s\n" "IP" "MAC" "Port" "Service" "Status"
+  printf "%-16s %-17s %-8s %-18s %s\n" "----" "---" "----" "-------" "------"
+
+  # 获取 MAC 地址（不用关联数组，兼容 bash 3.x）
+  get_mac() {
+    arp -a 2>/dev/null | grep "$1" | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1
+  }
+
   sort -t'|' -k1,1V -k2,2n "$tmpfile" | while IFS='|' read -r ip port svc; do
-    printf "%-16s %-8s %-18s %s\n" "$ip" "$port" "$svc" "open"
+    mac=$(get_mac "$ip")
+    [[ -z "$mac" ]] && mac="?"
+    printf "%-16s %-17s %-8s %-18s %s\n" "$ip" "$mac" "$port" "$svc" "open"
   done
   found=$(wc -l < "$tmpfile" | tr -d ' ')
 fi

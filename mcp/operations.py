@@ -23,6 +23,7 @@ SKILL_DIR = Path.home() / ".hermes/skills/agent-embodiment"
 SCHEMA_PATH = SKILL_DIR / "body-schema.json"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 CACHE_DIR = SKILL_DIR / ".cache"
+LOG_OPERATION_SCRIPT = SCRIPTS_DIR / "log-operation.py"
 
 CST = timezone(timedelta(hours=8))
 
@@ -44,6 +45,28 @@ class OperationError(Exception):
             "message": self.message,
             "suggestion": self.suggestion
         }
+
+
+# --- Operation Logging ---
+
+def log_operation(action: str, target: str, result: str, detail: str = None, reason: str = None):
+    """Call log-operation.py to record operation history."""
+    if not LOG_OPERATION_SCRIPT.exists():
+        return
+    
+    try:
+        cmd = ["python3", str(LOG_OPERATION_SCRIPT),
+               "--action", action,
+               "--target", target,
+               "--result", result]
+        if detail:
+            cmd.extend(["--detail", detail])
+        if reason:
+            cmd.extend(["--reason", reason])
+        
+        subprocess.run(cmd, capture_output=True, timeout=5)
+    except Exception:
+        pass  # Logging failure should not break main flow
 
 
 # --- Schema Helpers ---
@@ -601,6 +624,15 @@ async def learn_device_handler(params: Dict[str, Any]) -> Dict[str, Any]:
     # Save schema
     schema["discovery_meta"]["last_passive_learning"] = datetime.now(CST).isoformat()
     save_schema(schema)
+
+    # Log operation for each device
+    for action, device in zip(actions, learned_devices):
+        log_operation(
+            action=f"device-{action}",
+            target=device.get("primary_ip") or device.get("ip") or str(device.get("ips", ["?"])[0]),
+            result="success",
+            detail=f"{device.get('name', '?')} ({device.get('type', '?')}) - passive_learning"
+        )
 
     return {
         "status": "success",

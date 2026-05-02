@@ -1,111 +1,71 @@
 {
   "self": {
     "hostname": "your-hostname",
-    "os": "macOS 15.x",
+    "os": "macOS 26.x",
     "arch": "arm64",
-    "cpu": "Apple M1/M2/M3/M4",
+    "cpu": "Apple Mx",
     "memory_gb": 16,
-    "gpu": "your-gpu",
-    "hermes_version": "v2026.x.x",
-    "hermes_path": "/Users/your-username/.hermes/hermes-agent",
-    "ip": ["192.168.x.x", "10.x.x.x"],
-    "python": "3.x",
-    "docker": "installed",
-    "node": "v22.x",
-    "discovered_at": "2026-01-01T00:00:00+08:00"
+    "hermes_version": "Hermes Agent v0.12.0",
+    "ip": ["<your-ip>"],
+    "discovered_at": "2026-05-02T00:00:00+08:00",
+    "gpu": {"backend": "metal", "name": "Apple GPU", "memory_total_mb": 16384, "memory_free_mb": 0},
+    "hardware": {
+      "audio": [{"name": "内置麦克风"}, {"name": "内置扬声器"}],
+      "bluetooth": {"state": "On", "devices": []},
+      "storage": [{"filesystem": "/dev/disk1s1", "used": "100Gi", "total": "256Gi", "mount": "/"}]
+    }
   },
   "environment": {
     "timezone": "Asia/Shanghai",
-    "networks": ["192.168.x.0/24"],
-    "gateway": "192.168.x.1"
-  },
-  "zt_network": {
-    "id": "your-zt-network-id",
-    "name": "your-network-name",
-    "subnet": "192.168.x.0/24",
-    "hermes_ip": "192.168.x.x",
-    "route_via": "192.168.x.x",
-    "target_network": "192.168.x.0/24"
+    "networks": ["<your-local-subnet>/24"]
   },
   "devices": [
     {
-      "id": "pve",
-      "type": "hypervisor",
-      "name": "Proxmox VE",
-      "ip": "192.168.x.100",
-      "os": "Proxmox VE",
-      "hostname": "your-pve-hostname",
-      "access": {
-        "ssh": "ssh root@192.168.x.100",
-        "ssh_alias": "pve-zt",
-        "web": "https://192.168.x.100:8006"
-      },
-      "capabilities": ["vm_lifecycle", "vm_console", "storage", "network"],
-      "safety_level": "high",
-      "vms": [
-        {"vmid": 101, "name": "VM-1", "status": "running"}
-      ],
-      "discovered": false,
+      "id": "example-router",
+      "type": "router",
+      "name": "网关路由",
+      "ip": "192.168.<x>.1",
+      "capabilities": ["HTTP", "DNS"],
+      "ports": [53, 80],
+      "safety_level": "read_only",
       "status": "reachable",
-      "notes": "ZT 直连，禁用 PQ KEX"
+      "discovered": true,
+      "source": "network_scan",
+      "ips": ["192.168.<x>.1"],
+      "primary_ip": "192.168.<x>.1"
     },
     {
-      "id": "vm-example",
-      "type": "vm",
-      "name": "Example VM",
-      "ip": "192.168.x.109",
-      "os": "Windows 11 / Ubuntu / etc",
-      "hostname": "your-vm-hostname",
-      "host": "pve",
-      "vmid": 103,
-      "user": "your-vm-user",
-      "access": {
-        "ssh": {
-          "available": true,
-          "command": "ssh vm-alias",
-          "method": "ZT 直连，禁用 PQ KEX"
-        },
-        "ollama_api": {"available": true, "url": "http://192.168.x.109:11434"}
-      },
-      "capabilities": ["ollama_inference", "powershell", "ssh"],
-      "safety_level": "medium",
-      "gpu": "your-gpu-model",
-      "ollama_version": "0.x.x",
-      "ollama_models": ["model-name:size"],
-      "discovered": false,
+      "id": "example-nas",
+      "type": "nas",
+      "name": "NAS",
+      "ip": "192.168.<x>.139",
+      "capabilities": ["SSH", "HTTP", "SMB", "NFS", "storage"],
+      "ports": [22, 80, 139, 445, 2049],
+      "safety_level": "read_only",
       "status": "reachable",
-      "notes": "填写你的 VM 实际信息"
+      "discovered": true,
+      "source": "network_scan",
+      "ips": ["192.168.<x>.139"],
+      "primary_ip": "192.168.<x>.139"
+    },
+    {
+      "id": "example-inference-server",
+      "type": "inference_server",
+      "name": "推理服务器",
+      "ip": "192.168.<x>.109",
+      "capabilities": ["SSH", "Ollama"],
+      "ports": [22, 11434],
+      "safety_level": "read_write",
+      "status": "reachable",
+      "discovered": false,
+      "source": "passive_learning",
+      "ips": ["192.168.<x>.109"],
+      "primary_ip": "192.168.<x>.109"
     }
   ],
-  "ssh_config": {
-    "example": {
-      "host": "your-ssh-alias",
-      "hostname": "192.168.x.x",
-      "user": "your-ssh-user",
-      "kex_fix": "curve25519-sha256,ecdh-sha2-nistp256,diffie-hellman-group14-sha256",
-      "connect_timeout": 15
-    },
-    "issue": "macOS OpenSSH 10.2+ 后量子算法 mlkem768x25519-sha256 握手包过大，过 ZT 隧道丢包导致 SSH 卡死"
-  },
-  "services": [
-    {
-      "id": "hermes-dashboard",
-      "name": "Hermes Dashboard",
-      "url": "http://192.168.x.x:9119",
-      "capabilities": ["config_management", "session_view"],
-      "safety_level": "low",
-      "status": "running"
-    },
-    {
-      "id": "hermes-gateway",
-      "name": "Hermes Gateway",
-      "platforms": ["feishu", "telegram", "discord", "weixin"],
-      "capabilities": ["messaging", "cron"],
-      "safety_level": "low"
-    }
-  ],
+  "services": [],
   "discovery_meta": {
-    "last_full_discovery": "2026-01-01T00:00:00+08:00",
+    "last_full_discovery": "2026-05-02T00:00:00+08:00",
     "schema_version": "1.1"
   }
 }

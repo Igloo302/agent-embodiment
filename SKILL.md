@@ -12,6 +12,24 @@ description: |
 
 > 我知道自己是谁、站在哪里、周围有什么。
 
+## 🖥️ 平台兼容性
+
+**当前状态**：在 macOS 上完整测试通过。Linux/Windows 可运行但需要针对性调整。
+
+**跨平台脚本**（无需修改）：
+- `discover-network.sh` — 使用 `arp -a`, `nc -z`，Linux/macOS 通用
+- `merge-schema.py` — 纯 Python，跨平台
+
+**需要调整的脚本**：
+
+| 脚本 | macOS 特有命令 | Linux 替代方案 |
+|------|----------------|----------------|
+| `discover-self.sh` | `system_profiler`, `sysctl -n machdep.cpu.brand_string` | `/proc/cpuinfo`, `lscpu` |
+| `discover-hardware.sh` | `system_profiler SPAudioDataType` 等 | `lspci`, `lsusb`, `/proc/asound` |
+| `discover-inference.sh` | `system_profiler SPDisplaysDataType` (Apple Metal) | `nvidia-smi`, `lspci \| grep -i vga` |
+
+**适配方式**：在脚本中检测 `uname`，分支处理不同平台。
+
 ## ⚠️ 首次加载检测（Agent 必读）
 
 **加载此 skill 时，立即检查**：
@@ -53,6 +71,31 @@ test -f ~/.hermes/skills/agent-embodiment/body-schema.json && echo "exists" || e
 
 **embodiment 只回答「有什么」，不执行操作。**
 
+### 架构原则：Agent Orchestrates, Scripts Process
+
+整个 embodiment 生态遵循一条红线：
+
+| 由谁做 | 做什么 | 为什么 |
+|--------|--------|--------|
+| **Agent（AI）** | 读取外部信息（记忆、Hindsight、配置、对话上下文）、做判断、决定调用哪些脚本 | Agent 知道上下文和意图，能做弹性决策 |
+| **脚本/工具** | 纯函数式数据处理：接收参数 → 处理 → 输出结果。不读文件，不联网，不做推理 | 脚本是确定性的，可测试的，不会因为文件缺失而崩溃 |
+
+**典型分解示例**（这次会话中用户纠正的案例）：
+
+```
+❌ 错误：脚本自己读 MEMORY.md 解析设备
+    merge-schema.py → read_file("MEMORY.md") → 正则提取 IP → 补充到 schema
+
+✅ 正确：Agent 读取记忆 → 通过参数传给脚本
+    Agent → hindsight_recall("我的设备") → 提取列表 →
+    merge-schema.py --memory-devices '[{...}]' → 补充到 schema
+```
+
+**好处**：
+- 脚本不依赖特定的存储格式（今天用 MEMORY.md，明天换 Hindsight，脚本不需要改）
+- Agent 可以灵活组合多个信息源（记忆 + 当前对话 + 实时探测）
+- 脚本变得可测试：给什么输入，输出什么结果，不需要文件系统 mock
+
 ## 设计理念
 
 人有「本体感」（proprioception）——闭上眼睛你也知道自己手在哪、能举多重。
@@ -82,7 +125,7 @@ Agent 也需要类似的能力：
 1. 检查 MCP Server 状态
    - query_device 工具可用？
    - learn_device 工具可用？
-   - 失败 → 提示用户检查 config.yaml 中的 mcp_servers
+   - 失败 → 自动配置 MCP（见下方「MCP 自动配置」）
 
 2. 检查依赖
    - Python 3.8+
@@ -93,6 +136,46 @@ Agent 也需要类似的能力：
    - 网络访问权限（macOS 需要授权）
    - 摄像头/麦克风权限（可选）
 ```
+
+#### MCP 自动配置
+
+如果 MCP 工具不可用，Agent 自动执行：
+
+```bash
+# 1. 检查 MCP wrapper 脚本
+test -f ~/.hermes/scripts/embodiment-mcp.sh || {
+  # 创建 wrapper 脚本
+  mkdir -p ~/.hermes/scripts
+  cat > ~/.hermes/scripts/embodiment-mcp.sh << 'EOF'
+#!/bin/bash
+cd ~/.hermes/skills/agent-embodiment/mcp
+exec ~/.hermes/hermes-agent/venv/bin/python server.py
+EOF
+  chmod +x ~/.hermes/scripts/embodiment-mcp.sh
+}
+
+# 2. 检查 config.yaml 中的 MCP 配置
+grep -q "embodiment:" ~/.hermes/config.yaml || {
+  # 追加 MCP 配置
+  cat >> ~/.hermes/config.yaml << 'EOF'
+
+mcp_servers:
+  embodiment:
+    command: ~/.hermes/skills/agent-embodiment/mcp/.venv/bin/python
+    args:
+      - ~/.hermes/skills/agent-embodiment/mcp/server.py
+    description: Agent Embodiment - Device and infrastructure management
+EOF
+}
+
+# 3. 提示用户重启 Hermes
+echo "✅ MCP 配置已添加，请重启 Hermes Agent 使其生效"
+```
+
+**用户确认**：
+- 配置完成后提示：「MCP 已配置，需要重启 Hermes 才能生效。是否现在重启？」
+- 用户确认 → 重启 Hermes
+- 用户拒绝 → 继续用脚本方式，提示「MCP 工具将在下次启动时可用」
 
 ### Phase 0.1: 本机扫描（~5秒）
 
@@ -204,13 +287,29 @@ echo "hostname:$(hostname) os:$(uname -s) arch:$(uname -m) ip:$(ipconfig getifad
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
 ```
 
-自动执行：存活探测（schema 已知 IP + ARP 补充）→ 端口扫描（27 种端口）→ mDNS/Bonjour。
+**自动发现流程**：
+1. **路由表解析** — 从 `netstat -rn` 提取所有可达私有网段（192.168.x, 10.x, 172.16-31.x）
+2. **设备扫描** — 并行 ping 每个网段的全部 254 个 IP（分批 50 个等待）
+3. **端口扫描** — 对存活设备扫描 27 种常用端口
+
+**MAC 地址获取**：
+- 输出格式：`IP MAC Port Service Status`（5列）
+- MAC 从 ARP 表获取（`arp -a` 解析）
+- 无 ARP 记录的设备显示 `?`
+
+**进度汇报**：每个网段扫描完成后汇报发现数量。
 
 **失败 fallback**：
 ```bash
 net=$(ipconfig getifaddr en0 2>/dev/null | cut -d. -f1-3)
 for i in $(seq 1 20); do ping -c 1 -t 1 ${net}.$i 2>/dev/null && echo "${net}.$i alive"; done
 ```
+
+**注意事项**：
+- 扫描 5 个网段 × 254 IP 需 10-15 分钟，建议后台运行
+- 不要缩减扫描范围，必须覆盖全部 IP 避免遗漏设备
+- ping 超时设为 1 秒（`-t 1`）
+- MAC 地址仅在设备有 ARP 记录时可用（需同网段或之前通信过）
 
 ### 1.3 推理能力
 
@@ -220,6 +319,42 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
 
 探测 GPU（CUDA/Metal/ROCm）、VRAM、推理后端（Ollama/vLLM/llama.cpp/LM Studio）、模型清单、容量评估。**不绑定特定后端**。
 
+**ARP 扫描策略**：
+
+`discover-inference.sh` 会扫描 ARP 表中的所有 IP，探测 Ollama 端口（11434）。
+
+| 场景 | ARP 表大小 | 扫描时间 | 策略 |
+|------|-----------|---------|------|
+| 小型网络 | < 50 IP | < 1 分钟 | 直接全扫 |
+| 中型网络 | 50-200 IP | 1-3 分钟 | 分批扫描（每 20 IP 暂停 0.5s） |
+| 大型网络 | > 200 IP | > 3 分钟 | 分批扫描 + 用户确认 |
+
+**分批扫描实现**（已内置）：
+```bash
+batch_size=20
+for ip in $arp_ips; do
+  curl --max-time 1 "http://$ip:11434/api/tags" ...
+  # 每 20 个 IP 暂停 0.5 秒，避免网络拥塞
+  if [[ $((count % batch_size)) -eq 0 ]]; then
+    sleep 0.5
+  fi
+done
+```
+
+**注意**：ARP 表可能包含过期条目（如 500+ IP），这是正常的。分批扫描保证不会超时或阻塞。
+
+**输出字段**（自动合并到 `body-schema.json` 的 `self.gpu` 和 `self.inference_backends`）：
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| `gpu.backend` | GPU 类型 | `cuda`, `metal`, `rocm`, `cpu` |
+| `gpu.name` | GPU 名称 | `Apple GPU`, `NVIDIA GeForce RTX 5070` |
+| `gpu.memory_total_mb` | 总显存/统一内存 | `16384`, `12288` |
+| `gpu.memory_free_mb` | 可用显存 | `8192` |
+| `inference_backends[].type` | 后端类型 | `ollama`, `vllm`, `llama.cpp` |
+| `inference_backends[].url` | API 地址 | `http://localhost:11434` |
+| `inference_backends[].models` | 模型列表 | `["gemma4:e4b", "qwen2.5:7b"]` |
+
 ### 1.4 本机硬件
 
 ```bash
@@ -227,6 +362,33 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
 ```
 
 音频设备、蓝牙、显示器、摄像头、USB、打印机、挂载存储。
+
+**输出字段**（自动合并到 `body-schema.json` 的 `self.hardware`）：
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| `hardware.cameras` | 摄像头列表 | `[{"name": "FaceTime HD Camera"}]` |
+| `hardware.audio` | 音频设备 | `[{"name": "MacBook Pro扬声器"}]` |
+| `hardware.displays` | 显示器 | `[{"name": "Color LCD"}]` |
+| `hardware.bluetooth` | 蓝牙状态和设备 | `{"state": "On", "devices": [...]}` |
+| `hardware.usb` | USB 设备 | `[{"name": "USB Keyboard"}]` |
+| `hardware.storage` | 挂载存储 | `[{"filesystem": "/dev/disk3s1", "used": "418Gi", "total": "460Gi", "mount": "/"}]` |
+
+**查询硬件能力**：
+
+```python
+# 通过 MCP 查询
+mcp_embodiment_query_device()  # 无参数返回完整 schema
+
+# 或直接读取
+python3 -c "
+import json
+with open('~/.hermes/skills/agent-embodiment/body-schema.json') as f:
+    s = json.load(f)
+print('GPU:', s['self'].get('gpu', {}).get('name'))
+print('摄像头:', len(s['self'].get('hardware', {}).get('cameras', [])))
+"
+```
 
 ### 1.5 设备深入探测
 
@@ -279,6 +441,17 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 
 ### 什么时候跑
 
+调用方式（Agent 先读取记忆，提取设备列表后传参）：
+
+```bash
+# Agent 从记忆提取设备列表
+# 然后调用 merge-schema
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py \
+  --memory-devices '<记忆设备 JSON 列表>'
+```
+
+如果不传 `--memory-devices`，则脚本只处理扫描到的设备，不从记忆补充。
+
 | 场景 | 跑不跑 |
 |------|--------|
 | 完整发现 | **必须跑** |
@@ -294,41 +467,123 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 4. 敏感信息（密码）→ 不写入 schema
 5. 推理后端 → 通用检测（Ollama/vLLM/llama.cpp/LM Studio），不绑特定软件
 
+### ID 迁移：从 IP-based → MAC-based
+
+**背景**：v1.0 开始，设备唯一标识从 IP 改为 MAC 地址。
+
+**迁移过程**：
+
+当 `merge_schema()` 运行时，新扫描的设备使用 MAC 作为 id，而老 schema 中的设备用 IP-based id（如 `192-168-5-100`）。
+
+```
+旧 schema:  { id: "192-168-5-100", ip: "192.168.5.100", ... }
+新扫描:     { id: "aa:bb:cc:dd:ee:ff", mac: "aa:bb:cc:dd:ee:ff", ips: ["192.168.5.100"], ... }
+```
+
+**匹配策略**（三步）：
+
+1. **MAC 直接匹配**：新设备 `id` 在 `seen_ids` 中 → 直接合并
+2. **IP 匹配**：新设备 `id` 不在 `seen_ids`，但 `ips[]` 中的 IP 匹配到旧设备 → 迁移旧设备的 id 为 MAC，合并字段
+3. **全新设备**：以上都不匹配 → 作为新设备添加
+
+**鸡生蛋问题与预清理**：
+
+```
+问题：第一次合并后，新旧两套设备同时存在于 schema。
+第二次运行时，ip_to_existing 索引被新设备的 ips 覆盖，
+旧 IP-based 设备再也匹配不上，成为「僵尸」条目。
+
+解决方案：合并前做预清理。
+**解决方案：合并前做预清理。**
+扫描已有设备，找到被 MAC-based 设备替代的旧 IP-based 设备，移除之。
+判断条件：同名（name 相同）或 IP 匹配（old.ip in new.ips[]）。
+
+**额外过滤**：同时在预清理阶段移除 `.0`/`.255` 网段地址设备（`supplement_from_memory()` 已有该过滤，但已写入 schema 的遗留设备需要预清理处理）。
+
+**清理代码逻辑**（在 `merge_schema()` 中）：
+```python
+# 1. 建立 MAC → device 索引
+mac_to_dev = {d["mac"]: d for d in existing.values() if d.get("mac")}
+
+# 2. 找到被替代的旧 IP-based 设备 + 网段地址
+cleanup_ids = set()
+for dev_id, device in existing.items():
+    # 过滤 .0/.255 网段地址
+    old_ip = device.get("ip") or ""
+    if old_ip:
+        try:
+            last_octet = int(old_ip.split('.')[-1])
+            if last_octet == 0 or last_octet == 255:
+                cleanup_ids.add(dev_id)
+                continue
+        except (ValueError, IndexError):
+            pass
+    # 检查同名或同 IP 的 MAC-based 设备
+    if not device.get("mac"):
+        if (old_name and any(d.get("name") == old_name for d in mac_to_dev.values())) or \
+           (old_ip and any(old_ip in d.get("ips", []) for d in mac_to_dev.values())):
+            cleanup_ids.add(dev_id)
+
+# 3. 移除
+for cid in cleanup_ids:
+    existing.pop(cid, None)
+```
+
 ### body-schema.json 格式（v1.0）
 
 参见 `body-schema.example.json`（完整示例）。核心字段：
 
 ```json
 {
-  "self": { "hostname", "os", "arch", "cpu", "memory_gb", "ips", "mac", ... },
-  "environment": { "timezone", "networks" },
+  "self": {
+    "hostname": "...", "os": "...", "arch": "...",
+    "cpu": "...", "memory_gb": 16,
+    "ips": ["192.168.1.2"], "mac": "aa:bb:cc:dd:ee:ff"
+  },
+  "environment": { "timezone": "Asia/Shanghai", "networks": [] },
   "devices": [{
-    "id": "MAC地址", "mac", "name", "type", "ips", "primary_ip",
-    "access", "capabilities", "safety_level", "status"
+    "id": "aa:bb:cc:dd:ee:ff",
+    "mac": "aa:bb:cc:dd:ee:ff",
+    "name": "PVE-192.168.5.100",
+    "type": "hypervisor",
+    "ip": "192.168.5.100",
+    "ips": ["192.168.5.100", "10.0.0.1"],
+    "primary_ip": "192.168.5.100",
+    "capabilities": ["SSH", "PVE"],
+    "ports": [22, 8006],
+    "safety_level": "read_only",
+    "status": "reachable",
+    "discovered": true,
+    "source": "network_scan",
+    "last_seen": "2026-05-02T00:35:38+08:00"
   }],
-  "services": [{ "id", "name", "url", "capabilities", "safety_level" }],
-  "discovery_meta": { "last_full_discovery", "schema_version" }
+  "services": [{ "id": "...", "name": "...", "url": "...", "capabilities": [], "safety_level": "read_only" }],
+  "discovery_meta": { "last_full_discovery": "...", "schema_version": "1.1" }
 }
 ```
 
 **设备唯一标识（v1.0 核心改进）**：
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 设备唯一标识，使用 MAC 地址（如 `00:11:22:33:44:55`） |
-| `mac` | MAC 地址（与 id 相同） |
-| `ips` | IP 地址数组（支持多网络：本地 + VPN + ZeroTier） |
-| `primary_ip` | 主要 IP（用于默认连接） |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 设备唯一标识，使用 MAC 地址（如 `00:11:22:33:44:55`）；无 MAC 时用 IP-based（`192-168-5-100`） |
+| `mac` | string|null | MAC 地址（与 id 相同，等下次扫描到 MAC 后接管） |
+| `ip` | string | 旧格式向后兼容的单个 IP |
+| `ips` | string[] | IP 地址数组（支持多网络：本地 + VPN + ZeroTier） |
+| `primary_ip` | string | 主要 IP（用于默认连接） |
+| `last_seen` | string (ISO8601) | 最后发现时间 |
+| `source` | string | 数据来源：`network_scan` / `memory_supplement` / `passive_learning` / `manual` |
 
 **合并逻辑**：
 - 扫描发现新 IP → 查询 MAC → MAC 已存在则追加 IP 到 ips 数组
-- MAC 获取失败 → 用 hostname + IP 组合作为临时 id，标记 `id_type: "temporary"`
-- 后续获取到 MAC 时再合并
+- MAC 获取失败（ARP 无记录）→ 用 IP-based id，等下次扫描到 MAC 后再迁移
+- 无 MAC 设备在后续扫描获得 MAC 后，通过 IP 匹配自动合并
 
 **为什么用 MAC 地址**：
 - IP 地址会变（DHCP）
 - hostname 可能重复或修改
 - MAC 地址是硬件唯一标识，不随网络变化
+- 多网卡设备（ZT + 本地）通过 ips 数组管理
 
 ---
 
@@ -555,7 +810,7 @@ def on_device_info_detected(text, ip=None, device_type=None):
 |------|------|
 | `discover-self.sh` | 本机信息 |
 | `discover-hardware.sh` | 音频/蓝牙/显示器/摄像头/USB/存储 |
-| `discover-network.sh` | 网络发现（存活探测 + 端口 + mDNS） |
+| `discover-network.sh` | 网络发现（存活探测 + 端口 + mDNS），输出含 MAC 列 |
 | `discover-mdns.sh` | mDNS/Bonjour 服务发现（discover-network.sh 也会调用） |
 | `discover-pve.sh` | PVE VM 列表（可选插件） |
 | `discover-inference.sh` | GPU/VRAM/推理后端/模型 |
@@ -579,7 +834,7 @@ Embodiment 可以作为 MCP 服务器运行，让任何 MCP 客户端（Hermes�
 ~/.hermes/scripts/embodiment-mcp.sh
 
 # 或用 Hermes venv
-/Users/igloo/.hermes/hermes-agent/venv/bin/python ~/.hermes/skills/agent-embodiment/mcp/server.py
+~/.hermes/hermes-agent/venv/bin/python ~/.hermes/skills/agent-embodiment/mcp/server.py
 ```
 
 ### 可用工具（v1.0 精简版）
@@ -723,7 +978,7 @@ python3 mcp/server.py --call get_schema
 ```yaml
 mcp_servers:
   embodiment:
-    command: "/Users/igloo/.hermes/scripts/embodiment-mcp.sh"
+    command: "~/.hermes/scripts/embodiment-mcp.sh"
     timeout: 120
     connect_timeout: 60
 ```
@@ -800,6 +1055,13 @@ agent-embodiment/
 | 网络扫描结果不一致 | `discover-network.sh` 每次运行可能发现不同设备（ARP/mDNS 时序差异）。merge-schema.py 已处理：旧缓存 + 新扫描结果合并，累积发现不丢设备 |
 | 端口扫描全部失败 | 检查：(1) 是否在目标网段 (2) 目标设备是否开机 (3) 防火墙是否阻止。macOS 使用 `nc -G` 超时参数 |
 | ARP 表为空 | 当前网段无其他设备，或刚开机 ARP 缓存未建立。等待几分钟或主动访问网络资源 |
+| 扫描耗时过长 | 5 网段 × 254 IP ≈ 10-15 分钟，正常。后台运行不阻塞用户 |
+| ARP 表过大（500+ IP） | 正常现象，ARP 缓存包含历史通信过的所有设备。`discover-inference.sh` 已内置分批扫描（每 20 IP 暂停 0.5s），不会超时 |
+| `remote_endpoints: unbound variable` | `discover-inference.sh` 需在 ARP 扫描前初始化 `remote_endpoints=""` |
+| **MAC 地址获取失败**（ARP 表无记录） | 设备不在同一广播域（如 ZeroTier 对端），或刚开机缓存未建立。不影响设备发现，下次扫描到 ARP 记录后自动合并 |
+| **新旧设备 ID 格式冲突**（IP-based vs MAC-based） | 自动处理：预清理阶段移除被 MAC-based 替代的旧设备。见「ID 迁移」章节 |
+| **`wait -n: command not found`**（macOS bash 3.x） | macOS 自带 bash 3.x 不支持 `wait -n`。已修复：改用 `wait` 每 N 个进程等待一次。见 `discover-network.sh` 并行扫描逻辑 |
+| **`declare -A: invalid option`**（macOS bash 3.x） | macOS 自带 bash 3.x 不支持关联数组。已修复：改用 `arp -a | grep` 函数获取 MAC 地址 |
 
 ### merge-schema.py 设计要点
 
@@ -807,7 +1069,8 @@ agent-embodiment/
 - **网络发现累积**：`discover_network_devices()` 先读旧缓存，再跑新扫描，两者合并（IP 去重，端口/服务追加）。解决 `discover-network.sh` 每次扫描结果不一致的问题
 - **本机跳过**：`get_local_ips()` 用 `ifconfig` 获取本机 IP，自动过滤
 - **设备类型猜测**：`guess_device_type(ip, info)` 按端口优先级推断（PVE > NAS > Ollama > LM-Studio > llama.cpp > HTTP > SSH > SMB > DNS > unknown）
-- **输出解析**：`parse_network_output(output)` 纯函数，将脚本文本输出转为 `{ip: {ports, services}}` dict
+- **输出解析**：`parse_network_output(output)` 纯函数，将脚本文本输出转为 `{key: {mac, ips, ports, services}}` dict。支持新格式（5列含 MAC）和旧格式（4列无 MAC）
+- **ID 迁移**：`merge_schema()` 中通过三步匹配（MAC ID → IP 匹配 → 全新）完成 MAC-based 迁移，并预清理被替代的旧设备
 
 ### merge-schema.py 函数清单
 
@@ -819,16 +1082,43 @@ agent-embodiment/
 | `discover_self()` | 读缓存的本机信息 JSON |
 | `test_reachability(ips)` | ping 测试 IP 连通性 |
 | `detect_inference_backends()` | 探测 Ollama/vLLM/LM Studio |
-| `parse_network_output(output)` | 解析网络扫描文本 → dict |
+| `parse_network_output(output)` | 解析网络扫描文本 → dict（支持新/旧两种格式） |
 | `get_local_ips()` | 获取本机所有 IP |
-| `guess_device_type(ip, info)` | 多源推断设备类型（mDNS/HTTP/SSH/端口） |
+| `get_device_by_ip(schema, ip)` | 根据 IP 查找设备（支持单 IP 和多 IP 设备） |
+| `supplement_from_memory(schema, memory_devices)` | 从 Agent 传入的记忆列表补充设备（见下方详细说明） |
+| `guess_device_type(ip, info)` | 多源推断设备类型类型、名称、操作系统和硬件能力。返回 `(dtype, name, os_type, capabilities)`。新增字段：`os_type`（操作系统）、`capabilities`（推断的硬件能力，如 `cuda`/`inference`/`vm_host`/`storage`） |
 | `probe_device_fingerprint(ip, ports)` | 探测设备指纹（HTTP Server/SSH banner/Ollama info） |
 | `get_cache_ttl(dtype)` | 获取设备类型的缓存 TTL |
 | `is_device_cache_expired(device)` | 检查设备缓存是否过期 |
 | `get_devices_needing_refresh(schema)` | 获取需要刷新的设备（分组） |
-| `discover_network_devices()` | 旧缓存 + 新扫描 → 累积合并设备列表 |
-| `merge_schema(...)` | 合并 self + 设备 + 推理后端 → schema |
-| `main()` | 6 步流程编排 |
+| `discover_network_devices()` | 旧缓存 + 新扫描 → 累积合并设备列表（使用 MAC 作为 key） |
+| `_merge_device_fields(existing, new)` | 将新设备数据合并到已有设备，保留旧数据不丢（辅助函数） |
+| `merge_schema(...)` | 合并 self + 设备 + 推理后端 → schema（含 ID 迁移和预清理） |
+| `main()` | 7 步流程编排（Agent 传入记忆设备列表） |
+
+### 从 Memory 补充设备信息
+
+`supplement_from_memory(schema, memory_devices)` 从 Agent 传入的记忆设备列表补充网络扫描可能遗漏的设备。
+
+**工作原理**：
+1. **Agent 负责读取记忆**（不写死在脚本里）—— Agent 在调用 merge-schema.py 前，从自己的记忆中提取设备信息
+2. Agent 通过 `--memory-devices` 参数将设备列表以 JSON 格式传入脚本
+3. 脚本负责过滤重复、过滤无效 IP、补充到 schema
+4. 补充的设备标记 `source: "memory_supplement"`, `discovered: false`
+
+**注入方式**：
+```bash
+# Agent 先读取记忆，提取设备列表
+# 然后传参调用
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py \
+  --memory-devices '[{"ip":"192.168.5.100","type":"hypervisor","name":"PVE","capabilities":["ssh"]}]'
+```
+
+**Agent 从哪里读记忆**：
+- Agent 可以根据需要灵活选择来源：Hindsight memory、MEMORY.md、当前配置、或任何其他来源
+- 脚本不绑定任何特定的记忆存储格式
+
+**优先级**：扫描结果 > Memory 补充（已存在的设备跳过）
 
 ---
 
@@ -1073,8 +1363,9 @@ bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
 # 硬件设备
 bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
 
-# 合并到 Schema
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+# 合并到 Schema（Agent 先读取记忆，通过参数传入设备列表）
+python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py \
+  --memory-devices '{"ip":"...","type":"...","name":"..."}'
 
 # 查看设备关系图
 python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py
@@ -1129,6 +1420,7 @@ mcp_embodiment_merge_schema
 | 端口扫描全部失败 | **常见原因**：(1) 当前不在目标网段 (2) 目标设备未开放常用端口 (3) 防火墙阻止扫描。**建议**：使用被动学习添加设备信息，当回到目标网络时会自动检测状态 |
 | ARP 表为空 | 当前网段无其他设备，或刚开机 ARP 缓存未建立。等待几分钟或主动访问网络资源 |
 | 扫描到 0 台设备 | 当前网段设备未开放常用端口（22, 80, 443, 5000, 8006, 11434 等）。这是正常的，说明端口扫描工作正常，只是目标网段不同 |
+| **设备重复**（新旧格式冲突） | 自动修复：重新运行 `merge-schema.py`，预清理阶段会移除被替代的旧设备。如果重复持续存在，清除 cache 后重试 |
 
 ```
 ~/.hermes/skills/agent-embodiment/
@@ -1145,10 +1437,66 @@ mcp_embodiment_merge_schema
 ## 参考资料
 
 - `references/mcp-vs-skill-vs-cli.md` — MCP vs Skill vs CLI 的触发可靠性分析，何时用 MCP、何时用 CLI
+- `references/release-checklist.md` — v1.0 上线检查清单，核心功能验证步骤
+- `references/hardware-scanning-impl.md` — 硬件能力扫描实现细节（GPU/音频/存储解析、超时修复）
+- `references/v1.0-launch-testing.md` — v1.0 上线测试记录（性能基准、关键修复、用户偏好）
 - **v1.0 产品方案** — `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/ObsidianVault/1-Projects/Skills/agent-embodiment-v1.md`
 
 ---
 
+## 后续迭代（Roadmap）
+
+### 🔮 远程设备硬件能力探测
+
+**目标**：检查网段内其他设备的硬件能力（GPU、摄像头、存储等），如果设备允许控制和获取。
+
+**实现思路**：
+
+1. **SSH 远程探测**（针对有 SSH 访问权限的设备）
+   - 对 `capabilities: [ssh]` 且 `status: reachable` 的设备
+   - 执行远程命令获取硬件信息：
+     ```bash
+     ssh <ip> "system_profiler SPDisplaysDataType SPHardwareDataType"  # macOS
+     ssh <ip> "lspci | grep -i vga && nvidia-smi"  # Linux with NVIDIA
+     ssh <ip> "cat /proc/cpuinfo && free -h && df -h"  # Linux 通用
+     ```
+   - 结果写入对应设备的 `hardware` 字段
+
+2. **API 探测**（针对有 HTTP API 的设备）
+   - DSM/Synology NAS: `GET /webapi/entry.cgi?api=SYNO.Storage.CGI.Storage`
+   - vLLM/Ollama: 已有模型信息，可扩展 GPU 利用率查询
+   - PVE: `GET /api2/json/nodes/{node}/status` 获取 CPU/内存/存储
+
+3. **安全考虑**
+   - 仅探测 `access` 字段已配置凭据的设备
+   - 敏感信息（密码）不写入 schema
+   - 用户可配置「允许远程探测」白名单
+
+4. **触发时机**
+   - 用户明确请求：「检查 Windows VM 的 GPU」
+   - 定期刷新（每日/每周 cron）
+   - 设备首次发现时深入探测
+
+**优先级**：P2（v1.1 迭代）
+
+---
+
+## 版本管理原则
+
+**语义化版本**：`MAJOR.MINOR.PATCH`
+
+| 变更类型 | 版本号变化 | 示例 |
+|---------|-----------|------|
+| 核心功能新增/架构重构 | MAJOR +1 | v1.0 → v2.0（新增 MCP 工具） |
+| 功能增强/性能优化 | MINOR +1 | v1.0 → v1.1（MAC ID 迁移） |
+| Bug 修复/文档更新 | PATCH +1 | v1.0 → v1.0.1（修复 ARP 扫描超时） |
+
+**避免版本号虚高**：小改动不应导致 MINOR/MAJOR 跳跃。例如：
+- ❌ v1.0 → v1.2（只改了 ARP 扫描策略）
+- ✅ v1.0 → v1.0.1（修复 ARP 扫描超时）
+
+---
+
 **维护者**: 劲阳
-**最后更新**: 2026-05-01
-**版本**: 1.0.0 (MCP工具精简为2个 + MAC地址唯一标识 + 设备合并逻辑)
+**最后更新**: 2026-05-02
+**版本**: 1.0.0 (核心功能: MCP 工具, 网络扫描, 硬件能力查询, 被动学习)

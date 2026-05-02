@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 SKILL_DIR = Path.home() / ".hermes/skills/agent-embodiment"
 SCHEMA_PATH = SKILL_DIR / "body-schema.json"
 CREDENTIALS_PATH = SKILL_DIR / "credentials.json"
+LOG_OPERATION_SCRIPT = SKILL_DIR / "scripts" / "log-operation.py"
 CST = timezone(timedelta(hours=8))
 
 # Schema version for v1.0
@@ -47,6 +48,26 @@ CACHE_TTL_HOURS = {
     "container": 0.5,  # 30 min
     "default": 4,
 }
+
+
+def log_operation(action: str, target: str, result: str, detail: str = None, reason: str = None):
+    """调用 log-operation.py 记录操作历史（使用 subprocess，不 import）"""
+    if not LOG_OPERATION_SCRIPT.exists():
+        return
+    
+    try:
+        cmd = ["python3", str(LOG_OPERATION_SCRIPT),
+               "--action", action,
+               "--target", target,
+               "--result", result]
+        if detail:
+            cmd.extend(["--detail", detail])
+        if reason:
+            cmd.extend(["--reason", reason])
+        
+        subprocess.run(cmd, capture_output=True, timeout=5)
+    except Exception:
+        pass  # 日志记录失败不影响主流程
 
 
 def load_schema() -> Dict[str, Any]:
@@ -345,6 +366,15 @@ def update_device(
         schema.setdefault("discovery_meta", {})["schema_version"] = SCHEMA_VERSION
 
     save_schema(schema)
+    
+    # 记录操作历史
+    log_operation(
+        action=f"device-{action}",
+        target=device.get("primary_ip") or ip,
+        result="success",
+        detail=f"{device.get('name', 'unknown')} ({device.get('type', 'unknown')}) - {source}"
+    )
+    
     return action, device
 
 
@@ -416,6 +446,15 @@ def handle_ssh_failure(ip: str, reason: Optional[str] = None) -> Tuple[str, Dict
         status = "unreachable"
 
     action, device = update_device(ip=ip, status=status)
+    
+    # 记录 SSH 失败操作
+    log_operation(
+        action="ssh-connect",
+        target=ip,
+        result="fail",
+        reason=reason or "unknown error"
+    )
+    
     return action, device
 
 
