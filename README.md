@@ -33,7 +33,8 @@ Agent：跑在 MacBook Pro 上，macOS 26.3，Apple M1，16GB 内存。
 - **Schema 驱动** — 所有设备信息存在 `body-schema.json`，Agent 自行决定怎么做
 - **MCP 工具** — 提供 `query_device` 和 `learn_device` 两个工具，支持自然语言查询和被动学习
 - **被动学习** — 对话中提到设备自动记录；操作设备时自动提取硬件能力（SSH/Ollama/ComfyUI 等）
-- **手动管理** — 提供 `manage-device.py add/update/delete/list` 脚本，直接增删改设备
+- **手动管理** — 提供 `manage-device.py add/update/delete/list/export/import` 脚本，支持标签过滤
+- **健康检查** — `health-check.py` 一键 ping + 端口扫描，自动更新设备状态
 - **安全操作** — 4 级安全分级（🟢只读→🔴高风险），中高风险操作必须确认
 - **跨平台** — macOS 完整测试，Linux/Windows 可运行（部分脚本需适配）
 - **路径无关** — 动态获取 skill 目录，可安装在任何位置

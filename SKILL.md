@@ -83,6 +83,17 @@ test -f <SKILL_DIR>/body-schema.json && echo "exists" || echo "not_found"
 | **Agent（AI）** | 读取外部信息（记忆、Hindsight、配置、对话上下文）、做判断、决定调用哪些脚本 | Agent 知道上下文和意图，能做弹性决策 |
 | **脚本/工具** | 纯函数式数据处理：接收参数 → 处理 → 输出结果。不读文件，不联网，不做推理 | 脚本是确定性的，可测试的，不会因为文件缺失而崩溃 |
 
+### 用户操作层：脚本优先，MCP 次之
+
+embodiment 提供两层接口，适用不同的使用者：
+
+| 使用者 | 接口 | 定位 |
+|--------|------|------|
+| **用户**（直接终端操作） | `scripts/manage-device.py` 等脚本 | 主入口，CLI 友好，不依赖 Agent 软件 |
+| **Agent**（AI 内部编排） | `mcp_embodiment_*` MCP 工具 | 自动化场景，Agent 对话中静默调用 |
+
+**原则**：手工操作类的功能（增删改查）优先用脚本实现，再考虑包装为 MCP 工具。用户可以通过 skill 文档直接调用脚本，不受 Agent 软件限制。MCP 工具只提供 AI 自动化需要的能力（query_device、learn_device）。
+
 **典型分解示例**（这次会话中用户纠正的案例）：
 
 ```
@@ -1537,6 +1548,59 @@ python3 <SKILL_DIR>/scripts/manage-device.py delete --name "Old Device" --confir
 python3 <SKILL_DIR>/scripts/manage-device.py delete --mac "aa:bb:cc:dd:ee:ff" --confirm
 ```
 
+#### 设备导出/导入
+
+```bash
+# 导出所有设备
+python3 <SKILL_DIR>/scripts/manage-device.py export
+python3 <SKILL_DIR>/scripts/manage-device.py export --output /path/to/devices.json
+
+# 按类型过滤导出
+python3 <SKILL_DIR>/scripts/manage-device.py export --filter hypervisor
+
+# 导入设备（合并模式，默认）
+python3 <SKILL_DIR>/scripts/manage-device.py import --input devices.json
+
+# 导入设备（替换模式，清除现有设备后导入）
+python3 <SKILL_DIR>/scripts/manage-device.py import --input devices.json --replace
+
+# 导入时覆盖已有设备
+python3 <SKILL_DIR>/scripts/manage-device.py import --input devices.json --merge --update-existing
+```
+
+#### 标签管理
+
+```bash
+# 添加时指定标签
+python3 <SKILL_DIR>/scripts/manage-device.py add --ip 192.168.5.100 --name "PVE" --tags "hypervisor,production"
+
+# 增删标签
+python3 <SKILL_DIR>/scripts/manage-device.py update --name "PVE" --add-tags "critical"
+python3 <SKILL_DIR>/scripts/manage-device.py update --name "PVE" --remove-tags "test"
+
+# 按标签过滤
+python3 <SKILL_DIR>/scripts/manage-device.py list --tag production
+```
+
+#### 设备健康检查
+
+```bash
+# 快速检查（ping 所有设备）
+python3 <SKILL_DIR>/scripts/health-check.py --quick
+
+# 完整检查（ping + 端口扫描）
+python3 <SKILL_DIR>/scripts/health-check.py --full
+
+# 检查特定设备
+python3 <SKILL_DIR>/scripts/health-check.py --device "PVE" --full
+
+# 输出报告
+python3 <SKILL_DIR>/scripts/health-check.py --quick --output report.json
+
+# 不更新 schema（只查不改）
+python3 <SKILL_DIR>/scripts/health-check.py --quick --no-update
+```
+
 ### 典型使用场景
 
 | 场景 | 方式 |
@@ -1553,7 +1617,10 @@ python3 <SKILL_DIR>/scripts/manage-device.py delete --mac "aa:bb:cc:dd:ee:ff" --
 | **手动添加设备** | 脚本：`manage-device.py add` |
 | **手动更新设备** | 脚本：`manage-device.py update` |
 | **手动删除设备** | 脚本：`manage-device.py delete` |
-| **查看设备列表** | 脚本：`manage-device.py list` |
+| **设备标签过滤** | 脚本：`manage-device.py list --tag production` |
+| **导出设备** | 脚本：`manage-device.py export` |
+| **导入设备** | 脚本：`manage-device.py import --input file.json` |
+| **健康检查** | 脚本：`health-check.py --quick` |
 
 ### 性能调优
 
@@ -1666,7 +1733,29 @@ mcp_embodiment_merge_schema
 
 ## 更新日志
 
-### v1.0.2 (2026-05-07)
+### v1.0.3 (2026-05-08)
+
+**新功能**
+- ✨ `manage-device.py export/import` — 设备导出/导入
+  - `export`: 支持 `--output` 指定文件和 `--filter` 按类型过滤
+  - `import`: 支持 `--merge`（合并，默认）或 `--replace`（替换）
+  - import 按 MAC/名称/IP 三重去重，避免重复导入
+- ✨ `manage-device.py` 标签系统
+  - `add/update` 支持 `--tags`, `--add-tags`, `--remove-tags`
+  - `list` 支持 `--tag` 过滤
+- ✨ `health-check.py` — 设备健康检查
+  - `--quick`: ICMP ping 快速检查
+  - `--full`: ping + 端口扫描 (22/80/443/5000/8006/11434)
+  - `--device`: 检查指定设备
+  - `--output`: 输出 JSON 报告
+  - 自动更新设备 status 字段，CPU 并发检查
+
+**Bug 修复**
+- 🐛 修复 `body-schema.json` 设备重复（由导入引起），自动去重合并
+- 🐛 修复 `health-check.py` 重复显示（相同 IP 只检查一次）
+
+**文档**
+- 📝 SKILL.md 新增导出/导入、标签、健康检查使用说明
 
 **新功能**
 - ✨ 新增 `manage-device.py` 脚本：手动设备管理（增删改查）
@@ -1705,4 +1794,4 @@ mcp_embodiment_merge_schema
 
 **维护者**: 劲阳
 **最后更新**: 2026-05-08
-**版本**: 1.0.2 (核心功能: MCP 工具, 网络扫描, 硬件能力查询, 被动学习, 动态路径, 手动设备管理)
+**版本**: 1.0.3 (核心功能: MCP 工具, 网络扫描, 硬件能力查询, 被动学习, 动态路径, 手动设备管理, 健康检查)

@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-manage-device.py — Manual device management: add, update, delete devices.
+manage-device.py — Manual device management: add, update, delete, export, import devices.
 
 Usage:
   python3 manage-device.py add --name "My Router" --ip 192.168.5.1 --type router
   python3 manage-device.py add --ip 192.168.5.100  # MAC auto-detected via ARP
   python3 manage-device.py update --mac "aa:bb:cc:dd:ee:ff" --name "New Name"
   python3 manage-device.py delete --mac "aa:bb:cc:dd:ee:ff" --confirm
+  python3 manage-device.py export --output devices.json --filter type=server
+  python3 manage-device.py import --input devices.json --merge
 
 Features:
   - MAC as unique identifier
   - Support for ips array and primary_ip
   - Auto MAC lookup via ARP for new IPs
+  - Tags system for device categorization
+  - Export/Import devices to/from JSON
   - Friendly error messages and success confirmations
 """
 
@@ -196,6 +200,11 @@ def cmd_add(args: argparse.Namespace) -> int:
     if args.capabilities:
         capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
 
+    # Parse tags
+    tags = []
+    if args.tags:
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+
     # Determine device name
     name = args.name or f"device-{args.ip}"
 
@@ -215,6 +224,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         "primary_ip": args.ip,
         "ports": [],
         "capabilities": sorted(capabilities),
+        "tags": sorted(tags),
         "safety_level": "read_only",
         "status": "unknown",
         "discovered": False,
@@ -366,6 +376,27 @@ def cmd_update(args: argparse.Namespace) -> int:
         device["notes"] = args.notes
         changes.append(f"notes updated")
 
+    # Tags management
+    if args.add_tags:
+        tags = set(device.get("tags", []))
+        new_tags = [t.strip() for t in args.add_tags.split(",") if t.strip()]
+        tags.update(new_tags)
+        device["tags"] = sorted(tags)
+        changes.append(f"added tags: {', '.join(new_tags)}")
+
+    if args.remove_tags:
+        tags = set(device.get("tags", []))
+        remove_tags = [t.strip() for t in args.remove_tags.split(",") if t.strip()]
+        tags.difference_update(remove_tags)
+        device["tags"] = sorted(tags)
+        changes.append(f"removed tags: {', '.join(remove_tags)}")
+
+    if args.tags:
+        old_tags = device.get("tags", [])
+        new_tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+        device["tags"] = sorted(new_tags)
+        changes.append(f"tags: {old_tags} -> {new_tags}")
+
     if not changes:
         print("Warning: No changes specified", file=sys.stderr)
         return 1
@@ -448,6 +479,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     schema = load_schema()
     devices = schema.get("devices", [])
 
+    # Filter by type
+    if args.filter_type:
+        devices = [d for d in devices if d.get("type") == args.filter_type]
+
+    # Filter by tag
+    if args.tag:
+        devices = [d for d in devices if args.tag in d.get("tags", [])]
+
     if not devices:
         print("No devices found.")
         return 0
@@ -461,20 +500,170 @@ def cmd_list(args: argparse.Namespace) -> int:
         mac = device.get("mac", "N/A")
         discovered = "auto" if device.get("discovered") else "manual"
         source = device.get("source", "unknown")
+        tags = device.get("tags", [])
 
         print(f"  {name}")
         print(f"    Type: {dtype}")
         print(f"    IP: {primary_ip}")
         print(f"    MAC: {mac}")
         print(f"    Source: {source} ({discovered})")
+        if tags:
+            print(f"    Tags: {', '.join(tags)}")
         print()
+
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Export devices to a JSON file."""
+    schema = load_schema()
+    devices = schema.get("devices", [])
+
+    # Apply filters
+    if args.filter:
+        filter_parts = args.filter.split("=", 1)
+        if len(filter_parts) == 2:
+            filter_key, filter_value = filter_parts
+            if filter_key == "type":
+                devices = [d for d in devices if d.get("type") == filter_value]
+            elif filter_key == "tag":
+                devices = [d for d in devices if filter_value in d.get("tags", [])]
+            else:
+                print(f"Warning: Unknown filter key '{filter_key}', ignoring filter", file=sys.stderr)
+
+    if not devices:
+        print("No devices to export.")
+        return 0
+
+    output_path = Path(args.output)
+
+    # Prepare export data
+    export_data = {
+        "exported_at": datetime.now(CST).isoformat(),
+        "export_version": "1.0",
+        "device_count": len(devices),
+        "devices": devices
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"Exported {len(devices)} devices to {output_path}")
+    print(f"Success: Exported {len(devices)} devices to '{output_path}'")
+
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Import devices from a JSON file."""
+    input_path = Path(args.input)
+
+    if not input_path.exists():
+        print(f"Error: Input file not found: {input_path}", file=sys.stderr)
+        return 1
+
+    try:
+        with open(input_path, encoding="utf-8") as f:
+            import_data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in input file: {e}", file=sys.stderr)
+        return 1
+
+    # Extract devices from import data
+    if isinstance(import_data, dict) and "devices" in import_data:
+        import_devices = import_data["devices"]
+    elif isinstance(import_data, list):
+        import_devices = import_data
+    else:
+        print("Error: Invalid import file format. Expected dict with 'devices' key or list.", file=sys.stderr)
+        return 1
+
+    if not import_devices:
+        print("No devices to import.")
+        return 0
+
+    schema = load_schema()
+    existing_devices = schema.get("devices", [])
+
+    # Build lookup for existing devices by MAC, name, and primary_ip
+    existing_by_mac = {}
+    existing_by_name = {}
+    existing_by_ip = {}
+    for d in existing_devices:
+        mac = d.get("mac")
+        if mac:
+            existing_by_mac[normalize_mac(mac)] = d
+        name = d.get("name")
+        if name:
+            existing_by_name[name.lower()] = d
+        # primary_ip
+        pip = d.get("primary_ip") or d.get("ip")
+        if pip:
+            existing_by_ip[pip] = d
+        # also check ips array
+        for ip in d.get("ips", []):
+            existing_by_ip.setdefault(ip, d)
+
+    stats = {"added": 0, "updated": 0, "skipped": 0}
+
+    if args.replace:
+        # Replace mode: clear all existing devices
+        existing_devices.clear()
+
+    for device in import_devices:
+        mac = device.get("mac")
+        if mac:
+            mac = normalize_mac(mac)
+
+        if args.replace:
+            # In replace mode, just add all devices
+            device["mac"] = mac
+            existing_devices.append(device)
+            stats["added"] += 1
+        else:
+            # Merge mode - check MAC, name, and IP
+            existing = None
+            if mac and mac in existing_by_mac:
+                existing = existing_by_mac[mac]
+            if not existing:
+                import_name = device.get("name", "")
+                if import_name and import_name.lower() in existing_by_name:
+                    existing = existing_by_name[import_name.lower()]
+            if not existing:
+                import_ip = device.get("primary_ip") or device.get("ip")
+                if import_ip and import_ip in existing_by_ip:
+                    existing = existing_by_ip[import_ip]
+
+            if existing:
+                # Device exists - update it
+                if args.update_existing:
+                    # Update fields from imported device
+                    for key, value in device.items():
+                        if key != "mac":  # Don't overwrite MAC
+                            existing[key] = value
+                    stats["updated"] += 1
+                else:
+                    stats["skipped"] += 1
+            else:
+                # New device
+                device["mac"] = mac
+                existing_devices.append(device)
+                stats["added"] += 1
+
+    save_schema(schema)
+
+    logger.info(f"Imported devices: added={stats['added']}, updated={stats['updated']}, skipped={stats['skipped']}")
+    print(f"Success: Imported devices from '{input_path}'")
+    print(f"  Added: {stats['added']}")
+    print(f"  Updated: {stats['updated']}")
+    print(f"  Skipped: {stats['skipped']}")
 
     return 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Manual device management: add, update, delete devices",
+        description="Manual device management: add, update, delete, export, import devices",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -487,14 +676,26 @@ Examples:
   python3 manage-device.py update --mac "aa:bb:cc:dd:ee:ff" --name "New Name"
   python3 manage-device.py update --name "Old Name" --type server --ip 192.168.5.200
   python3 manage-device.py update --mac "aa:bb:cc:dd:ee:ff" --add-capabilities "ssh,http"
+  python3 manage-device.py update --mac "aa:bb:cc:dd:ee:ff" --add-tags "production,critical"
   python3 manage-device.py update --mac "aa:bb:cc:dd:ee:ff" --notes "Main server"
 
   # Delete a device
   python3 manage-device.py delete --mac "aa:bb:cc:dd:ee:ff" --confirm
   python3 manage-device.py delete --name "Old Device" --confirm
 
-  # List all devices
+  # List devices
   python3 manage-device.py list
+  python3 manage-device.py list --filter-type server
+  python3 manage-device.py list --tag production
+
+  # Export devices
+  python3 manage-device.py export --output devices.json
+  python3 manage-device.py export --filter type=server --output servers.json
+
+  # Import devices
+  python3 manage-device.py import --input devices.json
+  python3 manage-device.py import --input devices.json --replace
+  python3 manage-device.py import --input devices.json --update-existing
         """
     )
 
@@ -507,6 +708,7 @@ Examples:
     add_parser.add_argument("--mac", help="Device MAC address (auto-detected if not provided)")
     add_parser.add_argument("--type", help="Device type (e.g., router, server, nas)")
     add_parser.add_argument("--capabilities", help="Comma-separated list of capabilities")
+    add_parser.add_argument("--tags", help="Comma-separated list of tags")
 
     # Update command
     update_parser = subparsers.add_parser("update", help="Update an existing device")
@@ -520,6 +722,9 @@ Examples:
     update_parser.add_argument("--capabilities", help="Replace capabilities (comma-separated)")
     update_parser.add_argument("--add-capabilities", help="Add capabilities (comma-separated)")
     update_parser.add_argument("--remove-capabilities", help="Remove capabilities (comma-separated)")
+    update_parser.add_argument("--tags", help="Replace tags (comma-separated)")
+    update_parser.add_argument("--add-tags", help="Add tags (comma-separated)")
+    update_parser.add_argument("--remove-tags", help="Remove tags (comma-separated)")
     update_parser.add_argument("--safety-level", choices=["read_only", "read_write", "full_control"], help="Safety level")
     update_parser.add_argument("--notes", help="Device notes")
 
@@ -531,6 +736,20 @@ Examples:
 
     # List command
     list_parser = subparsers.add_parser("list", help="List all devices")
+    list_parser.add_argument("--filter-type", dest="filter_type", help="Filter by device type")
+    list_parser.add_argument("--tag", help="Filter by tag")
+
+    # Export command
+    export_parser = subparsers.add_parser("export", help="Export devices to JSON file")
+    export_parser.add_argument("--output", default="devices-export.json", help="Output file path (default: devices-export.json)")
+    export_parser.add_argument("--filter", help="Filter devices (format: type=server or tag=production)")
+
+    # Import command
+    import_parser = subparsers.add_parser("import", help="Import devices from JSON file")
+    import_parser.add_argument("--input", required=True, help="Input file path")
+    import_parser.add_argument("--merge", action="store_true", default=True, help="Merge with existing devices (default)")
+    import_parser.add_argument("--replace", action="store_true", help="Replace all existing devices")
+    import_parser.add_argument("--update-existing", action="store_true", help="Update existing devices with same MAC")
 
     args = parser.parse_args()
 
@@ -546,6 +765,10 @@ Examples:
         return cmd_delete(args)
     elif args.command == "list":
         return cmd_list(args)
+    elif args.command == "export":
+        return cmd_export(args)
+    elif args.command == "import":
+        return cmd_import(args)
     else:
         parser.print_help()
         return 1
