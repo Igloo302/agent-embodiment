@@ -12,6 +12,9 @@ description: |
 
 > 我知道自己是谁、站在哪里、周围有什么。
 
+> **📁 路径说明**：本文档中用 `<SKILL_DIR>` 表示 skill 所在的根目录，实际路径取决于你的 Agent 软件。
+> 例如 Hermes Agent 下为 `~/.hermes/skills/agent-embodiment/`，其他软件请自行替换。
+
 ## 🖥️ 平台兼容性
 
 **当前状态**：在 macOS 上完整测试通过。Linux/Windows 可运行但需要针对性调整。
@@ -35,7 +38,7 @@ description: |
 **加载此 skill 时，立即检查**：
 
 ```bash
-test -f ~/.hermes/skills/agent-embodiment/body-schema.json && echo "exists" || echo "not_found"
+test -f <SKILL_DIR>/body-schema.json && echo "exists" || echo "not_found"
 ```
 
 **如果 body-schema.json 不存在**，主动询问用户：
@@ -148,7 +151,7 @@ test -f ~/.hermes/scripts/embodiment-mcp.sh || {
   mkdir -p ~/.hermes/scripts
   cat > ~/.hermes/scripts/embodiment-mcp.sh << 'EOF'
 #!/bin/bash
-cd ~/.hermes/skills/agent-embodiment/mcp
+cd <SKILL_DIR>/mcp
 exec ~/.hermes/hermes-agent/venv/bin/python server.py
 EOF
   chmod +x ~/.hermes/scripts/embodiment-mcp.sh
@@ -161,9 +164,9 @@ grep -q "embodiment:" ~/.hermes/config.yaml || {
 
 mcp_servers:
   embodiment:
-    command: ~/.hermes/skills/agent-embodiment/mcp/.venv/bin/python
+    command: <SKILL_DIR>/mcp/.venv/bin/python
     args:
-      - ~/.hermes/skills/agent-embodiment/mcp/server.py
+      - <SKILL_DIR>/mcp/server.py
     description: Agent Embodiment - Device and infrastructure management
 EOF
 }
@@ -209,13 +212,13 @@ echo "✅ MCP 配置已添加，请重启 Hermes Agent 使其生效"
 
 ```bash
 # 1. 本机发现
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
+bash <SKILL_DIR>/scripts/discover-self.sh
 
 # 2. 网络扫描
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
+bash <SKILL_DIR>/scripts/discover-network.sh
 
 # 3. 生成 Schema（会自动调用上面两个脚本 + 合并结果）
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+python3 <SKILL_DIR>/scripts/merge-schema.py
 ```
 
 完成后汇报：
@@ -228,7 +231,7 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
   - 网络设备：{N} 台
   - 推理能力：{摘要}
 
-我的「身体档案」已保存：~/.hermes/skills/agent-embodiment/body-schema.json
+我的「身体档案」已保存：<SKILL_DIR>/body-schema.json
 
 以后你可以直接问我：
   - 「你跑在什么上面？」→ 我读档案回答
@@ -271,7 +274,7 @@ schema 已存在时，先检查缓存再决定做什么。
 ### 1.1 本机信息
 
 ```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
+bash <SKILL_DIR>/scripts/discover-self.sh
 ```
 
 采集：hostname、OS、架构、CPU、内存、IP、Hermes 版本、Python/Docker/Node 状态。
@@ -284,7 +287,7 @@ echo "hostname:$(hostname) os:$(uname -s) arch:$(uname -m) ip:$(ipconfig getifad
 ### 1.2 网络发现
 
 ```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
+bash <SKILL_DIR>/scripts/discover-network.sh
 ```
 
 **自动发现流程**：
@@ -314,7 +317,7 @@ for i in $(seq 1 20); do ping -c 1 -t 1 ${net}.$i 2>/dev/null && echo "${net}.$i
 ### 1.3 推理能力
 
 ```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
+bash <SKILL_DIR>/scripts/discover-inference.sh
 ```
 
 探测 GPU（CUDA/Metal/ROCm）、VRAM、推理后端（Ollama/vLLM/llama.cpp/LM Studio）、模型清单、容量评估。**不绑定特定后端**。
@@ -358,7 +361,7 @@ done
 ### 1.4 本机硬件
 
 ```bash
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
+bash <SKILL_DIR>/scripts/discover-hardware.sh
 ```
 
 音频设备、蓝牙、显示器、摄像头、USB、打印机、挂载存储。
@@ -383,7 +386,7 @@ mcp_embodiment_query_device()  # 无参数返回完整 schema
 # 或直接读取
 python3 -c "
 import json
-with open('~/.hermes/skills/agent-embodiment/body-schema.json') as f:
+with open('<SKILL_DIR>/body-schema.json') as f:
     s = json.load(f)
 print('GPU:', s['self'].get('gpu', {}).get('name'))
 print('摄像头:', len(s['self'].get('hardware', {}).get('cameras', [])))
@@ -406,7 +409,7 @@ print('摄像头:', len(s['self'].get('hardware', {}).get('cameras', [])))
 
 | type | 探测命令 |
 |------|---------|
-| `hypervisor` | `~/.hermes/skills/agent-embodiment/scripts/discover-pve.sh <ip>` |
+| `hypervisor` | `<SKILL_DIR>/scripts/discover-pve.sh <ip>` |
 | `vm` | SSH `uname -a && df -h && free -h` |
 | `docker_host` | `docker ps -a --format '{{.Names}} {{.Status}}'` |
 | `inference_server` | `curl -s http://<ip>:11434/api/tags` |
@@ -436,7 +439,7 @@ print('摄像头:', len(s['self'].get('hardware', {}).get('cameras', [])))
 Phase 1 的结果写入 schema：
 
 ```bash
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+python3 <SKILL_DIR>/scripts/merge-schema.py
 ```
 
 ### 什么时候跑
@@ -446,7 +449,7 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
 ```bash
 # Agent 从记忆提取设备列表
 # 然后调用 merge-schema
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py \
+python3 <SKILL_DIR>/scripts/merge-schema.py \
   --memory-devices '<记忆设备 JSON 列表>'
 ```
 
@@ -826,7 +829,7 @@ mcp_embodiment_learn_device(text="连上 PVE 看看", dry_run=true)
 mcp_embodiment_learn_device(text="那个服务器", ip="192.168.5.100", type="server", name="主服务器")
 
 # 脚本方式（MCP 不可用时的 fallback）
-python3 ~/.hermes/skills/agent-embodiment/scripts/learn-device.py --text "打开 192.168.5.1 的路由器设置"
+python3 <SKILL_DIR>/scripts/learn-device.py --text "打开 192.168.5.1 的路由器设置"
 ```
 
 **Agent 行为指南**：
@@ -942,7 +945,7 @@ def on_device_info_detected(text, ip=None, device_type=None):
 
 ## 发现脚本
 
-`~/.hermes/skills/agent-embodiment/scripts/` 下：
+`<SKILL_DIR>/scripts/` 下：
 
 | 脚本 | 功能 |
 |------|------|
@@ -972,7 +975,7 @@ Embodiment 可以作为 MCP 服务器运行，让任何 MCP 客户端（Hermes�
 ~/.hermes/scripts/embodiment-mcp.sh
 
 # 或用 Hermes venv
-~/.hermes/hermes-agent/venv/bin/python ~/.hermes/skills/agent-embodiment/mcp/server.py
+~/.hermes/hermes-agent/venv/bin/python <SKILL_DIR>/mcp/server.py
 ```
 
 ### 可用工具（v1.0 精简版）
@@ -1248,7 +1251,7 @@ agent-embodiment/
 ```bash
 # Agent 先读取记忆，提取设备列表
 # 然后传参调用
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py \
+python3 <SKILL_DIR>/scripts/merge-schema.py \
   --memory-devices '[{"ip":"192.168.5.100","type":"hypervisor","name":"PVE","capabilities":["ssh"]}]'
 ```
 
@@ -1372,16 +1375,16 @@ python3 update-device.py --parse-output <ip> --ssh-output "$(ssh <ip> 'uname -a 
 
 ```bash
 # 打印 ASCII 关系树
-python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py
+python3 <SKILL_DIR>/scripts/device-graph.py
 
 # 自动推断并更新设备关系
-python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --build
+python3 <SKILL_DIR>/scripts/device-graph.py --build
 
 # 输出 JSON 格式（可用于其他工具）
-python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --format json
+python3 <SKILL_DIR>/scripts/device-graph.py --format json
 
 # 输出 Mermaid 图表代码（可渲染为图片）
-python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --format mermaid -o graph.md
+python3 <SKILL_DIR>/scripts/device-graph.py --format mermaid -o graph.md
 ```
 
 **关系推断规则**：
@@ -1406,17 +1409,17 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py --format merma
 
 ```bash
 # 执行检测
-python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py
+python3 <SKILL_DIR>/scripts/anomaly-detector.py
 
 # 查看历史告警
-python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --history
+python3 <SKILL_DIR>/scripts/anomaly-detector.py --history
 
 # 确认告警
-python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --ack <alert_id>
-python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --ack-all
+python3 <SKILL_DIR>/scripts/anomaly-detector.py --ack <alert_id>
+python3 <SKILL_DIR>/scripts/anomaly-detector.py --ack-all
 
 # 配置 webhook 通知
-python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --set-webhook feishu:https://open.feishu.cn/...
+python3 <SKILL_DIR>/scripts/anomaly-detector.py --set-webhook feishu:https://open.feishu.cn/...
 ```
 
 **检测类型**：
@@ -1456,7 +1459,7 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py --set-webh
 ```
 
 **中断恢复**：
-- 进度保存到 `~/.hermes/skills/agent-embodiment/.cache/discovery-progress.json`
+- 进度保存到 `<SKILL_DIR>/.cache/discovery-progress.json`
 - 中断后重新运行，跳过已完成的脚本
 - 手动清除缓存可重新开始：`rm -rf .cache/`
 
@@ -1490,26 +1493,26 @@ mcp_embodiment_learn_device(text="打开 192.168.5.1 的路由器设置")
 
 ```bash
 # 本机信息
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-self.sh
+bash <SKILL_DIR>/scripts/discover-self.sh
 
 # 网络扫描
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh
+bash <SKILL_DIR>/scripts/discover-network.sh
 
 # 推理能力检测
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-inference.sh
+bash <SKILL_DIR>/scripts/discover-inference.sh
 
 # 硬件设备
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-hardware.sh
+bash <SKILL_DIR>/scripts/discover-hardware.sh
 
 # 合并到 Schema（Agent 先读取记忆，通过参数传入设备列表）
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py \
+python3 <SKILL_DIR>/scripts/merge-schema.py \
   --memory-devices '{"ip":"...","type":"...","name":"..."}'
 
 # 查看设备关系图
-python3 ~/.hermes/skills/agent-embodiment/scripts/device-graph.py
+python3 <SKILL_DIR>/scripts/device-graph.py
 
 # 异常检测
-python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py
+python3 <SKILL_DIR>/scripts/anomaly-detector.py
 ```
 
 ### 典型使用场景
@@ -1530,18 +1533,18 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/anomaly-detector.py
 
 ```bash
 # 快速网络扫描（只扫描 ARP 表，不扫全子网）
-bash ~/.hermes/skills/agent-embodiment/scripts/discover-network.sh --quick
+bash <SKILL_DIR>/scripts/discover-network.sh --quick
 
 # 调整超时时间（单位：秒）
 export DISCOVERY_TIMEOUT=60
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+python3 <SKILL_DIR>/scripts/merge-schema.py
 
 # 并行发现（默认启用，可调整并发数）
 export DISCOVERY_MAX_WORKERS=8
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+python3 <SKILL_DIR>/scripts/merge-schema.py
 
 # 清除缓存重新发现
-rm -rf ~/.hermes/skills/agent-embodiment/.cache/
+rm -rf <SKILL_DIR>/.cache/
 mcp_embodiment_merge_schema
 ```
 
@@ -1551,7 +1554,7 @@ mcp_embodiment_merge_schema
 |------|---------|
 | 网络发现失败 | 检查本机网络连接，尝试 `--quick` 模式 |
 | Schema 损坏 | 删除 `body-schema.json` 后重新运行 `merge_schema` |
-| 脚本无权限 | `chmod +x ~/.hermes/skills/agent-embodiment/scripts/*.sh` |
+| 脚本无权限 | `chmod +x <SKILL_DIR>/scripts/*.sh` |
 | 发现结果不完整 | 清除缓存后重新扫描：`rm -rf .cache/ && mcp_embodiment_merge_schema` |
 | 设备显示 unreachable | 检查目标设备是否开机、网络是否可达、防火墙设置 |
 | MCP 工具不可用 | 检查 `~/.hermes/config.yaml` 中 embodiment MCP server 配置 |
@@ -1561,7 +1564,7 @@ mcp_embodiment_merge_schema
 | **设备重复**（新旧格式冲突） | 自动修复：重新运行 `merge-schema.py`，预清理阶段会移除被替代的旧设备。如果重复持续存在，清除 cache 后重试 |
 
 ```
-~/.hermes/skills/agent-embodiment/
+<SKILL_DIR>/
 ├── body-schema.json          # 主 Schema 文件
 ├── .cache/                   # 发现脚本缓存
 │   ├── discover-self.stdout

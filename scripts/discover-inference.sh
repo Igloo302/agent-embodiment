@@ -5,7 +5,10 @@
 
 set -euo pipefail
 
-SCHEMA="$HOME/.hermes/skills/agent-embodiment/body-schema.json"
+# 动态获取 skill 目录（脚本所在目录的上一级）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+SCHEMA="$SKILL_DIR/body-schema.json"
 
 echo "=== 推理能力探测 ==="
 echo ""

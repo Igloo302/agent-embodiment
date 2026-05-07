@@ -22,9 +22,10 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-SKILL_DIR = Path.home() / ".hermes/skills/agent-embodiment"
+# 动态获取 skill 目录（脚本所在目录的上一级）
+SCRIPTS_DIR = Path(__file__).parent.resolve()
+SKILL_DIR = SCRIPTS_DIR.parent
 SCHEMA_PATH = SKILL_DIR / "body-schema.json"
-SCRIPTS_DIR = SKILL_DIR / "scripts"
 CACHE_DIR = SKILL_DIR / ".cache"
 LOG_OPERATION_SCRIPT = SCRIPTS_DIR / "log-operation.py"
 

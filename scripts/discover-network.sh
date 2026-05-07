@@ -3,13 +3,16 @@
 # 存活探测 + 端口扫描 + mDNS，一站式完成
 # 新用户友好：无 body-schema.json 时也能跑
 
-set -euo pipefail
+set -eo pipefail
 
 # 禁用输出缓冲
 export PYTHONUNBUFFERED=1
 
-SCHEMA="$HOME/.hermes/skills/agent-embodiment/body-schema.json"
-SCRIPTS="$HOME/.hermes/skills/agent-embodiment/scripts"
+# 动态获取 skill 目录（脚本所在目录的上一级）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+SCHEMA="$SKILL_DIR/body-schema.json"
+SCRIPTS="$SKILL_DIR/scripts"
 
 echo "=== 网络发现 ===" >&2
 echo "" >&2

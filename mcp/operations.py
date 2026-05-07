@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # --- Constants ---
-SKILL_DIR = Path.home() / ".hermes/skills/agent-embodiment"
+# 动态获取 skill 目录（本文件在 mcp/ 下，上一级是 skill 根目录）
+SKILL_DIR = Path(__file__).parent.parent.resolve()
 SCHEMA_PATH = SKILL_DIR / "body-schema.json"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 CACHE_DIR = SKILL_DIR / ".cache"

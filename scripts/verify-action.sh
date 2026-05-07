@@ -20,9 +20,12 @@ TARGET="${2:-}"
 EXPECTED="${3:-}"
 TIMEOUT="${4:-30}"
 
-SCHEMA="$HOME/.hermes/skills/agent-embodiment/body-schema.json"
-CREDENTIALS="$HOME/.hermes/skills/agent-embodiment/credentials.json"
-SCRIPTS_DIR="$HOME/.hermes/skills/agent-embodiment/scripts"
+# 动态获取 skill 目录（脚本所在目录的上一级）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+SCHEMA="$SKILL_DIR/body-schema.json"
+SCRIPTS_DIR="$SKILL_DIR/scripts"
+CREDENTIALS="$SKILL_DIR/credentials.json"
 
 # 从 credential pool 解析凭证引用
 resolve_credential_ref() {
