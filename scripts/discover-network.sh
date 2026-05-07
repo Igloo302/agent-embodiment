@@ -116,9 +116,6 @@ port_name() {
   esac
 }
 
-printf "%-16s %-8s %-18s %s\n" "IP" "Port" "Service" "Status"
-printf "%-16s %-8s %-18s %s\n" "----" "----" "-------" "------"
-
 found=0
 tmpfile=$(mktemp)
 trap "rm -f '$tmpfile'" EXIT
