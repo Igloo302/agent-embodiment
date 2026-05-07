@@ -56,9 +56,7 @@ git clone https://github.com/Igloo302/agent-embodiment.git ~/agent-embodiment
 首次使用生成初始 Schema（约 10-15 分钟）：
 
 ```bash
-python3 ~/agent-embodiment/scripts/merge-schema.py
-# 或
-python3 ~/.hermes/skills/agent-embodiment/scripts/merge-schema.py
+python3 <SKILL_DIR>/scripts/merge-schema.py
 ```
 
 ## 使用
