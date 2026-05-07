@@ -32,8 +32,10 @@ Agent：跑在 MacBook Pro 上，macOS 26.3，Apple M1，16GB 内存。
 - **自动发现** — 本机硬件、网络拓扑、推理能力（GPU/VRAM/模型）、mDNS 服务
 - **Schema 驱动** — 所有设备信息存在 `body-schema.json`，Agent 自行决定怎么做
 - **MCP 工具** — 提供 `query_device` 和 `learn_device` 两个工具，支持自然语言查询和被动学习
+- **被动学习** — 对话中提到设备自动记录；操作设备时自动提取硬件能力（SSH/Ollama/ComfyUI 等）
 - **安全操作** — 4 级安全分级（🟢只读→🔴高风险），中高风险操作必须确认
 - **跨平台** — macOS 完整测试，Linux/Windows 可运行（部分脚本需适配）
+- **路径无关** — 动态获取 skill 目录，可安装在任何位置
 
 ## 安装
 
@@ -95,8 +97,12 @@ query_device()                    # 返回所有设备
 query_device(capability="inference")  # 查推理服务器
 query_device(name="PVE")          # 模糊匹配名称
 
-# 被动学习
+# 被动学习（对话中自动识别）
 learn_device(text="我的路由器在 192.168.1.1，是 MikroTik")
+
+# 被动学习（操作后自动提取）
+# Agent 在 SSH/Ollama/ComfyUI 操作后会自动提取硬件能力
+# 例如：SSH 后发现 GPU 型号、Ollama API 返回显存信息
 ```
 
 ## 工作原理
