@@ -1515,6 +1515,28 @@ python3 <SKILL_DIR>/scripts/device-graph.py
 python3 <SKILL_DIR>/scripts/anomaly-detector.py
 ```
 
+#### 手动设备管理（增删改查）
+
+```bash
+# 查看所有设备
+python3 <SKILL_DIR>/scripts/manage-device.py list
+
+# 添加设备（MAC 自动检测）
+python3 <SKILL_DIR>/scripts/manage-device.py add --ip 192.168.5.100 --name "My Server" --type server
+
+# 添加设备（指定 MAC）
+python3 <SKILL_DIR>/scripts/manage-device.py add --mac "aa:bb:cc:dd:ee:ff" --name "Router" --ip 192.168.5.1 --type router --capabilities "ssh,http"
+
+# 更新设备
+python3 <SKILL_DIR>/scripts/manage-device.py update --name "My Server" --type inference_server
+python3 <SKILL_DIR>/scripts/manage-device.py update --mac "aa:bb:cc:dd:ee:ff" --add-capabilities "cuda,inference"
+python3 <SKILL_DIR>/scripts/manage-device.py update --name "Router" --notes "主路由器"
+
+# 删除设备（需要确认）
+python3 <SKILL_DIR>/scripts/manage-device.py delete --name "Old Device" --confirm
+python3 <SKILL_DIR>/scripts/manage-device.py delete --mac "aa:bb:cc:dd:ee:ff" --confirm
+```
+
 ### 典型使用场景
 
 | 场景 | 方式 |
@@ -1528,6 +1550,10 @@ python3 <SKILL_DIR>/scripts/anomaly-detector.py
 | 检查异常 | 脚本：`anomaly-detector.py` |
 | 更新设备状态 | 脚本：`update-device.py`（内部脚本，非 MCP） |
 | 从对话学习 | MCP：`mcp_embodiment_learn_device` |
+| **手动添加设备** | 脚本：`manage-device.py add` |
+| **手动更新设备** | 脚本：`manage-device.py update` |
+| **手动删除设备** | 脚本：`manage-device.py delete` |
+| **查看设备列表** | 脚本：`manage-device.py list` |
 
 ### 性能调优
 
@@ -1640,6 +1666,18 @@ mcp_embodiment_merge_schema
 
 ## 更新日志
 
+### v1.0.2 (2026-05-07)
+
+**新功能**
+- ✨ 新增 `manage-device.py` 脚本：手动设备管理（增删改查）
+  - `add`：添加设备，支持自动 MAC 检测和手动指定
+  - `update`：更新设备名称、类型、IP、MAC、能力、安全等级等
+  - `delete`：删除设备（需 `--confirm` 确认）
+  - `list`：列出所有设备及其来源
+
+**文档**
+- 📝 SKILL.md 新增手动设备管理使用说明和速查表
+
 ### v1.0.1 (2026-05-07)
 
 **功能增强**
@@ -1666,5 +1704,5 @@ mcp_embodiment_merge_schema
 ---
 
 **维护者**: 劲阳
-**最后更新**: 2026-05-07
-**版本**: 1.0.1 (核心功能: MCP 工具, 网络扫描, 硬件能力查询, 被动学习, 动态路径)
+**最后更新**: 2026-05-08
+**版本**: 1.0.2 (核心功能: MCP 工具, 网络扫描, 硬件能力查询, 被动学习, 动态路径, 手动设备管理)
