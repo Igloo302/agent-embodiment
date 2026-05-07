@@ -587,32 +587,65 @@ for cid in cleanup_ids:
 
 ---
 
-## Phase 3: 被动学习（从对话中学习设备）
+## Phase 3: 被动学习（从对话和操作中学习设备）
 
-**核心原则**：不要专门跑扫描——在日常操作中，遇到新的网络/硬件就顺手记录。
-**边界**：只管网络拓扑和硬件。软件功能、模型、API 配置由其他 skill 和记忆覆盖。
+**核心原则**：不要专门跑扫描——在日常对话和操作中，遇到新的网络/硬件/能力就顺手记录。
+
+**两种学习路径**：
+1. **对话学习** — 用户提到设备信息（IP、类型、能力）
+2. **操作学习** — Agent 使用设备上的软件/服务时，从返回信息中提取硬件能力
 
 ### 触发条件
 
+#### 对话学习（用户提及）
+
 以下场景**自动触发**增量更新，不需要用户提醒：
 
-| 日常操作 | 发现什么 | 做什么 |
-|---------|---------|--------|
-| SSH 到某台机器 | 新 IP 不在 schema 里 | `python3 scripts/update-device.py --ip <ip> --type server --name <hostname>` |
-| SSH 成功后看 `uname -a` | 发现是 VM / 容器 | 更新 type 为 `vm` / `container` |
-| `qm list` 看到新 VM | 新虚拟机 | 加设备条目，type=vm |
-| `docker ps` 发现宿主机有容器 | 确认是 Docker 宿主机 | 标记 type=docker_host |
-| 某设备 SSH 失败 | 连不上 | `python3 scripts/update-device.py --ip <ip> --status unreachable` |
-| 扫端口发现新端口 | 新服务端口 | `python3 scripts/update-device.py --ip <ip> --ports <new_ports>` |
-| GPU/显存探测 | 硬件能力变化 | 更新 capabilities（cuda/metal/vram_gb） |
+| 用户说 | 发现什么 | 做什么 |
+|--------|---------|--------|
+| "打开 192.168.5.1 的路由器..." | IP + 类型(router) | `mcp_embodiment_learn_device(text="...")` |
+| "连上 PVE 看看" | 已知设备名 PVE | `mcp_embodiment_learn_device(text="...")` |
+| "用 Ollama 跑一下" | 推理能力暗示 | `mcp_embodiment_learn_device(text="...")` |
 
-### 不碰的（交给其他 skill）
+#### 操作学习（使用中发现）
 
+Agent 在**实际使用设备上的软件/服务**时，从返回信息中提取硬件能力：
+
+| 操作 | 返回信息 | 提取什么 | 更新到 schema |
+|------|---------|---------|---------------|
+| SSH 成功后 `uname -a` | `Linux ... x86_64` | OS、架构、hostname | `os_type`, `arch`, `name` |
+| SSH 成功后 `nvidia-smi` | `RTX 5070, 12288 MiB` | GPU 型号、显存 | `capabilities: [cuda]`, `gpu.name`, `gpu.memory_mb` |
+| SSH 成功后 `docker ps` | 容器列表 | Docker 宿主机 | `type: docker_host`, `capabilities: [docker]` |
+| SSH 成功后 `qm list` | VM 列表 | Hypervisor | `type: hypervisor`, `capabilities: [pve]` |
+| 调用 Ollama API `/api/tags` | 模型列表 | 推理后端 | `capabilities: [inference]`, `inference.type: ollama` |
+| 调用 Ollama API `/api/ps` | `GPU: NVIDIA RTX 5070` | GPU 型号 | `gpu.name` |
+| 调用 ComfyUI `/system_stats` | `GPU: 12288 MB` | 显存大小 | `gpu.memory_mb` |
+| 调用 vLLM `/v1/models` | 模型列表 | 推理后端 | `capabilities: [inference]`, `inference.type: vllm` |
+| 连 DSM `/webapi/entry.cgi` | 存储信息 | NAS | `type: nas`, `capabilities: [storage]` |
+| SSH 失败 | Connection refused | 连不上 | `status: unreachable` |
+
+**操作学习的执行时机**：
+- Agent 在调用其他 skill（PVE、Ollama、ComfyUI、SSH 等）**成功后**
+- 从返回的 stdout/API response 中提取信息
+- **静默调用** `mcp_embodiment_learn_device` 或 `scripts/update-device.py`
+- 不打断用户当前任务
+
+### 学习边界
+
+**embodiment 记录什么**（硬件/拓扑/能力）：
+- ✅ 设备类型（server/vm/nas/hypervisor）
+- ✅ 网络信息（IP、MAC、端口）
+- ✅ 硬件能力（GPU、显存、摄像头、存储）
+- ✅ 软件能力标签（cuda/inference/docker/pve/ssh）
+- ✅ 设备状态（reachable/unreachable/auth_required）
+
+**不记录什么**（交给其他 skill/memory）：
 - ❌ Ollama 模型列表 → memory 或 ollama-model-manager
 - ❌ ComfyUI 工作流 → memory
 - ❌ API endpoint 详情 → memory
 - ❌ 软件版本号 → memory
 - ❌ 服务内部配置 → 对应 skill
+- ❌ 凭据信息 → credential pool（不写入 schema）
 
 ### 执行规则
 
@@ -621,6 +654,7 @@ for cid in cleanup_ids:
 3. **不重复添加**：MCP 工具自动处理——已存在就更新，不存在才新增。
 4. **保守判断**：不确定设备类型就标 `unknown`，不瞎猜。
 5. **重要发现汇报**：新设备上线、硬件能力变化时，一句话告诉用户。
+6. **操作后提取**：调用其他 skill/API 成功后，从返回信息中提取硬件能力并更新。
 
 ### 工具
 
@@ -632,14 +666,15 @@ mcp_embodiment_query_device()
 mcp_embodiment_query_device(name="Windows")
 mcp_embodiment_query_device(capability="cuda")
 
-# 从对话中学习设备信息（被动学习核心工具）
-mcp_embodiment_learn_device(text="用户消息")
+# 从对话或操作结果中学习设备信息（被动学习核心工具）
+mcp_embodiment_learn_device(text="用户消息或操作返回信息")
+mcp_embodiment_learn_device(text="SSH 成功连接到 RTX5070", ip="192.168.5.109", capabilities="cuda,inference")
 ```
 
 **内部脚本**（供 skill 逻辑直接调用）：
 
 ```bash
-# 更新单个设备信息
+# 更新单个设备信息（操作学习后调用）
 python3 scripts/update-device.py --ip 192.168.5.100 --type server --name "主服务器"
 
 # 示例：SSH 到某台 Windows VM 后更新
@@ -648,8 +683,100 @@ python3 scripts/update-device.py --ip 192.168.5.109 --type vm --name "Win-RTX507
 # 示例：发现某设备连不上了
 python3 scripts/update-device.py --ip 192.168.5.100 --status unreachable
 
+# 示例：Ollama API 调用后发现 GPU 信息
+python3 scripts/update-device.py --ip 192.168.5.109 --capabilities "inference" --gpu-name "RTX 5070" --gpu-memory-mb 12288
+
 # 从对话中学习（脚本 fallback）
 python3 scripts/learn-device.py --text "用户消息"
+```
+
+### 从操作中学习硬件能力
+
+Agent 在使用设备上的软件/服务时，应从返回信息中提取硬件能力：
+
+#### SSH 操作后提取
+
+```bash
+# SSH 成功后，静默执行信息采集
+ssh <ip> "uname -a && hostname && cat /etc/os-release 2>/dev/null | head -3"
+
+# 提取字段：
+# - hostname → device.name
+# - OS (Linux/Darwin/Windows) → device.os_type
+# - 架构 (x86_64/arm64) → device.arch
+
+# 如果有 nvidia-smi
+ssh <ip> "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null"
+# 提取：GPU 型号、显存 → device.gpu.name, device.gpu.memory_mb
+
+# 如果有 docker
+ssh <ip> "docker ps -q 2>/dev/null | wc -l"
+# 有输出 → device.capabilities.append("docker"), device.type = "docker_host"
+
+# 如果是 PVE
+ssh <ip> "qm list 2>/dev/null | wc -l"
+# 有输出 → device.capabilities.append("pve"), device.type = "hypervisor"
+```
+
+#### API 调用后提取
+
+```bash
+# Ollama API
+curl -s http://<ip>:11434/api/tags
+# 提取：模型列表 → device.inference.models (不写入 schema，只标记能力)
+# 标记：device.capabilities.append("inference"), device.inference.type = "ollama"
+
+curl -s http://<ip>:11434/api/ps
+# 返回示例：{"models": [...], "gpu": "NVIDIA RTX 5070"}
+# 提取：GPU 型号 → device.gpu.name
+
+# ComfyUI API
+curl -s http://<ip>:8188/system_stats
+# 返回示例：{"devices": [{"name": "cuda:0", "vram_total": 12884901888}]}
+# 提取：显存 → device.gpu.memory_mb
+
+# vLLM API
+curl -s http://<ip>:8000/v1/models
+# 有返回 → device.capabilities.append("inference"), device.inference.type = "vllm"
+
+# DSM/Synology API
+curl -s "http://<ip>:5000/webapi/entry.cgi?api=SYNO.Storage.CGI.Storage"
+# 有返回 → device.type = "nas", device.capabilities.append("storage")
+```
+
+#### 调用示例（Agent 内部逻辑）
+
+```python
+# 伪代码：SSH 成功后自动提取信息
+def on_ssh_success(ip, stdout):
+    # 解析 uname 输出
+    hostname = parse_hostname(stdout)
+    os_type = parse_os(stdout)
+    arch = parse_arch(stdout)
+    
+    # 更新设备信息
+    mcp_embodiment_learn_device(
+        text=f"SSH connected to {hostname}",
+        ip=ip,
+        name=hostname,
+        type="server",  # 默认，后续可能被修正为 vm/docker_host
+        capabilities=["ssh"]
+    )
+    
+    # 如果发现 GPU
+    if "nvidia-smi" in stdout or "RTX" in stdout:
+        gpu_name = extract_gpu_name(stdout)
+        vram_mb = extract_vram(stdout)
+        update_device(ip, capabilities=["cuda"], gpu={"name": gpu_name, "memory_mb": vram_mb})
+
+# 伪代码：Ollama API 调用后提取
+def on_ollama_api_success(ip, response):
+    # 标记推理能力
+    update_device(ip, capabilities=["inference"], inference={"type": "ollama"})
+    
+    # 如果返回 GPU 信息
+    if "gpu" in response:
+        update_device(ip, gpu={"name": response["gpu"]})
 ```
 
 ### 从对话中学习设备信息
@@ -715,7 +842,7 @@ python3 ~/.hermes/skills/agent-embodiment/scripts/learn-device.py --text "打开
 
 ### 自动学习机制
 
-Agent 应在对话中**自动识别**设备信息并静默学习，无需用户显式请求。
+Agent 应在对话和操作中**自动识别**设备信息并静默学习，无需用户显式请求。
 
 #### 自动触发条件
 
@@ -727,6 +854,7 @@ Agent 应在对话中**自动识别**设备信息并静默学习，无需用户�
 | **设备关键词** | 路由器/交换机/NAS/PVE/服务器/虚拟机/VM | "打开 PVE"、"那个 NAS" |
 | **能力关键词** | SSH/Ollama/推理/ComfyUI/摄像头/拍照 | "用 Ollama 跑一下"、"拍张照" |
 | **操作暗示** | 连接/登录/打开/访问 + 设备 | "连上那台服务器" |
+| **操作返回** | SSH/API 调用成功后的返回信息 | nvidia-smi 输出、Ollama /api/ps 返回 |
 
 #### 置信度规则
 
@@ -756,6 +884,16 @@ Agent: "好的，NAS 的 IP 地址是多少？"
 # 低置信度：模糊描述 → 不添加
 用户: "那个机器怎么了"
 Agent: [不调用 mcp_embodiment_learn_device，继续对话]
+
+# 操作学习：SSH 成功后提取
+Agent: ssh 192.168.5.109 "uname -a && nvidia-smi"
+       → 返回: "Linux ... RTX 5070, 12288 MiB"
+       → [静默调用] update_device(ip="192.168.5.109", capabilities=["cuda"], gpu={"name": "RTX 5070", "memory_mb": 12288})
+
+# 操作学习：Ollama API 调用后提取
+Agent: curl http://192.168.5.109:11434/api/ps
+       → 返回: {"gpu": "NVIDIA RTX 5070"}
+       → [静默调用] update_device(ip="192.168.5.109", gpu={"name": "RTX 5070"})
 ```
 
 #### 静默调用代码片段
@@ -787,12 +925,12 @@ def on_device_info_detected(text, ip=None, device_type=None):
 
 #### 与被动感知的配合
 
-- **被动感知**（Phase 5）：在日常操作中自动更新设备状态
-- **自动学习**：在对话中识别新设备信息并添加
+- **对话学习**：在对话中识别新设备信息并添加
+- **操作学习**：在使用设备上的软件/服务时，从返回信息中提取硬件能力
 
 两者互补：
-- 被动感知关注**已有设备的状态变化**
-- 自动学习关注**新设备的发现和添加**
+- 对话学习关注**新设备的发现和添加**
+- 操作学习关注**已有设备的硬件能力细化**
 
 ### 不算被动感知的场景
 
